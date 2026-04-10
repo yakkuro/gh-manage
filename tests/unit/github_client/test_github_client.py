@@ -42,17 +42,18 @@ def _mock_gh_failure(mocker: MockerFixture, stderr: str, returncode: int = 1):
     )
 
 
-# Happy path — list_labels
-def test_list_labels_parses_json_response(mocker: MockerFixture) -> None:
-    _mock_gh_success(
-        mocker,
-        json.dumps(
-            [
-                {"name": "bug", "color": "d73a4a", "description": "Buggy"},
-                {"name": "feat", "color": "a2eeef", "description": None},
-            ]
-        ),
+# Happy path — list_labels.
+# NOTE: Phase 5 list_labels uses `gh api --paginate --jq '.[]'` which emits
+# one JSON object per line (NDJSON). Tests mock stdout with newline-separated
+# JSON objects, not a single JSON array.
+def test_list_labels_parses_ndjson_response(mocker: MockerFixture) -> None:
+    ndjson = (
+        json.dumps({"name": "bug", "color": "d73a4a", "description": "Buggy"})
+        + "\n"
+        + json.dumps({"name": "feat", "color": "a2eeef", "description": None})
+        + "\n"
     )
+    _mock_gh_success(mocker, ndjson)
     result = list_labels("yakkuro/gh-manage")
     assert result == [
         Label(name="bug", color="d73a4a", description="Buggy"),
@@ -60,25 +61,67 @@ def test_list_labels_parses_json_response(mocker: MockerFixture) -> None:
     ]
 
 
-def test_list_labels_auto_paginates(mocker: MockerFixture) -> None:
-    """list_labels must pass --paginate to gh api."""
-    mock_run = _mock_gh_success(mocker, "[]")
+def test_list_labels_uses_paginate_and_jq_flags(mocker: MockerFixture) -> None:
+    """list_labels must use `--paginate --jq '.[]'` to produce NDJSON.
+
+    Plain `--paginate` emits multiple JSON documents concatenated which
+    json.loads cannot parse for repos with >100 labels. `--jq '.[]'`
+    makes gh emit one JSON object per line — safe to parse line-by-line.
+    Regression for Codex HIGH finding on PR #8.
+    """
+    mock_run = _mock_gh_success(mocker, "")
     list_labels("yakkuro/gh-manage")
     args = mock_run.call_args.args[0]
     assert "--paginate" in args
+    assert "--jq" in args
+    # The jq filter should flatten the page array to individual items
+    jq_idx = args.index("--jq")
+    assert args[jq_idx + 1] == ".[]"
 
 
 def test_list_labels_handles_empty_response(mocker: MockerFixture) -> None:
-    _mock_gh_success(mocker, "[]")
+    """Empty stdout → empty list."""
+    _mock_gh_success(mocker, "")
     result = list_labels("yakkuro/gh-manage")
     assert result == []
+
+
+def test_list_labels_handles_multi_page_response(mocker: MockerFixture) -> None:
+    """Regression test for Codex HIGH finding: a multi-page response via
+    --paginate --jq '.[]' outputs one JSON object per line. Repos with
+    >100 labels (or any multi-page result) must parse correctly."""
+    ndjson_lines = [
+        json.dumps({"name": f"label{i}", "color": "000000", "description": ""})
+        for i in range(250)  # simulates 3 pages × ~100 labels
+    ]
+    _mock_gh_success(mocker, "\n".join(ndjson_lines) + "\n")
+    result = list_labels("yakkuro/big-repo")
+    assert len(result) == 250
+    assert result[0].name == "label0"
+    assert result[249].name == "label249"
+
+
+def test_list_labels_raises_gh_api_error_on_malformed_ndjson_line(
+    mocker: MockerFixture,
+) -> None:
+    """If gh api produces a malformed line (API format change, truncated
+    response), list_labels must raise GhAPIError, not propagate
+    json.JSONDecodeError as a raw traceback."""
+    ndjson = (
+        json.dumps({"name": "bug", "color": "d73a4a", "description": ""})
+        + "\n"
+        + "{this is not valid json\n"
+    )
+    _mock_gh_success(mocker, ndjson)
+    with pytest.raises(GhAPIError, match="Failed to parse label entry"):
+        list_labels("yakkuro/gh-manage")
 
 
 # Normalization
 def test_list_labels_normalizes_color_to_lowercase(mocker: MockerFixture) -> None:
     _mock_gh_success(
         mocker,
-        json.dumps([{"name": "bug", "color": "D73A4A", "description": "x"}]),
+        json.dumps({"name": "bug", "color": "D73A4A", "description": "x"}) + "\n",
     )
     result = list_labels("yakkuro/gh-manage")
     assert result[0].color == "d73a4a"
@@ -89,7 +132,7 @@ def test_list_labels_converts_null_description_to_empty_string(
 ) -> None:
     _mock_gh_success(
         mocker,
-        json.dumps([{"name": "bug", "color": "d73a4a", "description": None}]),
+        json.dumps({"name": "bug", "color": "d73a4a", "description": None}) + "\n",
     )
     result = list_labels("yakkuro/gh-manage")
     assert result[0].description == ""

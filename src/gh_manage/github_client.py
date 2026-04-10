@@ -162,23 +162,40 @@ def run_gh_api(
 
 
 def list_labels(repo: str) -> list[Label]:
-    """GET /repos/{repo}/labels — auto-paginated.
+    """GET /repos/{repo}/labels — auto-paginated via `gh api --paginate --jq '.[]'`.
 
     `repo` must be in `owner/repo` form.
     Returns a list of Label instances with color lowercased and
     description normalized to "" if the API returned null.
+
+    Pagination note: `gh api --paginate` alone emits multiple JSON
+    documents concatenated (one per page), which `json.loads()` cannot
+    parse for repos with >100 labels. Adding `--jq '.[]'` makes gh emit
+    one JSON object per line (NDJSON), which we parse line-by-line.
+    This handles repos of any size without falling into the multi-document
+    trap. Regression test: test_list_labels_handles_multi_page_response.
     """
-    data = run_gh_api(f"repos/{repo}/labels", paginate=True)
-    if data is None:
-        return []
-    return [
-        Label(
-            name=item["name"],
-            color=item["color"].lower(),
-            description=item.get("description") or "",
+    stdout = run_gh(["api", f"repos/{repo}/labels", "--paginate", "--jq", ".[]"])
+    labels: list[Label] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise GhAPIError(
+                f"Failed to parse label entry from `gh api` output: {e}. "
+                f"Re-run with `GH_DEBUG=api` to inspect the raw response."
+            ) from e
+        labels.append(
+            Label(
+                name=item["name"],
+                color=item["color"].lower(),
+                description=item.get("description") or "",
+            )
         )
-        for item in data
-    ]
+    return labels
 
 
 def create_label(repo: str, label: Label) -> None:

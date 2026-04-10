@@ -134,8 +134,13 @@ def compute_diff(
     for spec in _flatten_desired(desired):
         desired_label = _spec_to_label(spec)
 
-        # Case a: name match (preferred over old_name)
-        if spec.name in current_by_name:
+        # Case a: name match (preferred over old_name).
+        # The `not in consumed` guard prevents a later spec from matching
+        # a current label that was already consumed by a previous rename.
+        # Without it, `[fix(old_name="bug"), bug(new)]` vs current `[bug]`
+        # would produce both a rename AND a noop/update on "bug", and the
+        # apply would 404 after the rename removes "bug" from the server.
+        if spec.name in current_by_name and spec.name not in consumed:
             existing = current_by_name[spec.name]
             if (
                 existing.color != desired_label.color
@@ -145,8 +150,16 @@ def compute_diff(
             consumed.add(spec.name)
             continue
 
-        # Case b: rename via old_name
-        if spec.old_name and spec.old_name in current_by_name:
+        # Case b: rename via old_name.
+        # Same `not in consumed` guard: if two specs reference the same
+        # `old_name` (e.g. `[fix(old_name="bug"), defect(old_name="bug")]`),
+        # only the first rename is emitted. The second becomes a create,
+        # avoiding a 404 when apply_diff runs the second PATCH.
+        if (
+            spec.old_name
+            and spec.old_name in current_by_name
+            and spec.old_name not in consumed
+        ):
             renames.append(LabelRename(old_name=spec.old_name, new_label=desired_label))
             consumed.add(spec.old_name)
             continue

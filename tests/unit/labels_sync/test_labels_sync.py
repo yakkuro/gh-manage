@@ -130,6 +130,70 @@ def test_name_match_preferred_over_old_name_match() -> None:
     assert diff.is_empty
 
 
+# Codex HIGH regression: consumed tracking prevents double-matching
+def test_rename_consumed_label_is_not_reused_by_later_name_match() -> None:
+    """Regression test for Codex PR #8 MEDIUM finding: after a rename
+    consumes the "bug" current label, a LATER spec with name="bug" must
+    NOT match the now-consumed "bug" — it should become a new create.
+
+    Without the fix, compute_diff would emit both a rename (bug → fix)
+    AND a noop/update on "bug", and apply_diff would 404 on the second
+    operation because the server-side "bug" was renamed away.
+    """
+    current = [Label(name="bug", color="d73a4a", description="broken")]
+    desired = _make_config(
+        [
+            LabelSpec(
+                name="fix",
+                old_name="bug",
+                color="d73a4a",
+                description="bug fix",
+            ),
+            LabelSpec(
+                name="bug",
+                color="00ff00",
+                description="new meaning for bug",
+            ),
+        ]
+    )
+    diff = compute_diff(current, desired)
+    assert len(diff.renames) == 1
+    assert diff.renames[0].old_name == "bug"
+    assert diff.renames[0].new_label.name == "fix"
+    # The second spec (bug with new meaning) must become a create, not
+    # a noop/update that would conflict with the rename.
+    assert len(diff.creates) == 1
+    assert diff.creates[0].label.name == "bug"
+    assert diff.creates[0].label.color == "00ff00"
+    assert len(diff.updates) == 0
+
+
+def test_two_specs_cannot_rename_the_same_old_name() -> None:
+    """Regression test for Codex PR #8 MEDIUM finding: if two specs
+    reference the same old_name, only the first wins the rename. The
+    second spec falls through to create — not a duplicate rename that
+    would 404 in apply_diff.
+    """
+    current = [Label(name="bug", color="d73a4a", description="broken")]
+    desired = _make_config(
+        [
+            LabelSpec(name="fix", old_name="bug", color="d73a4a", description="fix"),
+            LabelSpec(
+                name="defect",
+                old_name="bug",
+                color="ff0000",
+                description="defect",
+            ),
+        ]
+    )
+    diff = compute_diff(current, desired)
+    assert len(diff.renames) == 1
+    assert diff.renames[0].new_label.name == "fix"  # first spec wins
+    # Second spec becomes a create, not a rename
+    assert len(diff.creates) == 1
+    assert diff.creates[0].label.name == "defect"
+
+
 # compute_diff — prune logic
 def test_prune_false_ignores_extra_labels() -> None:
     current = [
