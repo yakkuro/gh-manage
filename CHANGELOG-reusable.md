@@ -6,7 +6,32 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Reusable workflow `reusable-pr-gate-typescript.yml`** (Layer 3) — `install → lint → type-check → setup → test` pipeline for TypeScript/Node projects using `pnpm`. Inputs: `node-version` (required), `working-directory`, `install-command`, `test-command`, `lint`, `type-check`, `setup-command`, `pnpm-version`. Mirrors the `reusable-pr-gate-python.yml` structural pattern including the self-checkout block.
+- **Composite action `setup-node-pnpm`** (Layer 2) — installs a requested Node.js version and a pinned `pnpm` release. Pinned `pnpm` version: `10.33.0`. `setup-node`'s `cache: pnpm` feature is intentionally skipped in v0.2.0 (path-plumbing for non-root working-directory is deferred to a follow-up).
+- **Composite action `run-eslint`** (Layer 2) — runs `pnpm exec eslint .` using the consumer's `devDependencies`. Unlike Phase 1's `run-ruff` (which pins ruff via `uvx`), `run-eslint` does NOT pin eslint because eslint 10.x flat config requires peer dependencies (`typescript-eslint`, `@eslint/js`) that do not resolve cleanly through `pnpm dlx`. gh-manage recommends specific eslint family versions in `docs/usage/typescript.md` and the fixture `devDependencies`.
+- **Composite action `run-tsc`** (Layer 2) — runs `tsc --noEmit -p tsconfig.json` via `pnpm --package="typescript@<pinned>" dlx tsc`. Pinned `typescript` version: `6.0.2`. Uses the `pnpm --package=` form (not `pnpm dlx typescript@<ver> tsc`) because the `typescript` package ships multiple binaries (`tsc` and `tsserver`) and pnpm 10+ requires explicit disambiguation. This composite is the TypeScript analogue of Phase 1's `run-ruff` (standalone tool, pinned at gh-manage level).
+- **TypeScript fixture projects** — 3 new projects under `tests/fixtures/projects/`:
+  - `typescript-sample` — positive fixture; passes eslint + tsc + vitest cleanly
+  - `typescript-lint-fail` — negative fixture; triggers `@typescript-eslint/no-unused-vars` (grepped as `no-unused-vars` in smoke test)
+  - `typescript-type-fail` — negative fixture; triggers `TS2322` via a `const x: string = 42; void x;` pattern that keeps vitest runtime clean
+- **Smoke test workflow** — extended `.github/workflows/smoke-test.yml` with 3 new jobs mirroring the Phase 1 Python pattern:
+  - `positive-typescript-sample` uses the full reusable workflow via `./.github/workflows/reusable-pr-gate-typescript.yml`
+  - `negative-typescript-lint-fail` and `negative-typescript-type-fail` are regular jobs (not reusable calls) that invoke the composite actions with step-level `continue-on-error`, then verify BOTH the outcome is `failure` AND the direct-tool output contains the expected rule id / error code (`no-unused-vars` and `TS2322` respectively). This two-assertion pattern is inherited from Phase 1 learning #4.
+- **Consumer usage documentation** at `docs/usage/typescript.md` — prerequisites (eslint.config.js, tsconfig.json, pnpm-lock.yaml, eslint family devDeps), minimal example, input surface, tool versions (hybrid pinning explanation), example configs, disabling checks, troubleshooting, versioning.
+
+### Known limitations
+
+- **pnpm only**: Phase 2 v0.2.0 locks to `pnpm`. `npm` and `yarn` consumers are not supported in this release. The `package-manager` input from the main design spec is deferred to a future release.
+- **eslint pinning is recommendation-only**: gh-manage recommends eslint / typescript-eslint / @eslint/js versions via docs and fixture devDeps but does NOT enforce them. If a consumer's pins drift significantly, behavior may differ from gh-manage's smoke tests.
+- **Minimum Node 20**: driven by vitest 4.x engine constraint (`^20 || ^22 || >=24`). Consumers on Node 18 cannot use the fixture test runner, but may override `test-command` if their own test runner supports older Node.
+- **No `cache: pnpm`**: `setup-node-pnpm` intentionally skips `actions/setup-node`'s `cache: pnpm` feature in v0.2.0 because path-plumbing for non-root `working-directory` adds complexity. Cold pnpm installs run on every job; caching can be added in a follow-up if CI wall time becomes painful.
+- **Non-root `working-directory` in composites is not deeply tested**: the smoke test exercises `working-directory: tests/fixtures/projects/typescript-sample`, but no fixture exercises deep monorepo paths like `packages/client/`.
+- **Version skew detection**: Phase 2 does NOT test older-pnpm-generated lockfiles with pnpm 10 runtime, nor Node-version / TypeScript-target mismatches.
+- **Cross-repo invocation** has NOT been empirically validated in v0.2.0 (same constraint as Phase 1). Phase 3 (port-registry adoption) will be the first real cross-repo test for BOTH Python and TypeScript reusables. If issues arise, they will be hotfixed in v0.2.1 or v0.3.0.
+- **Pinned tool versions as of 2026-04-10**: `pnpm` `10.33.0`, `typescript` `6.0.2`. Fixture devDep recommendations: `eslint` `10.2.0`, `typescript-eslint` `8.58.1`, `@eslint/js` `10.0.1`, `vitest` `4.1.4`, `@types/node` `22.19.17`.
+- **Python tool refresh (uv / ruff / mypy) is deferred to v0.3.0**: Phase 1 pins from v0.1.0 remain active.
 
 ## [0.1.0] - 2026-04-10
 
