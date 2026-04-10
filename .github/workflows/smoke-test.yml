@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/reusable-pr-gate-typescript.yml'
       - '.github/workflows/smoke-test.yml'
       - 'actions/**'
       - 'tests/fixtures/projects/**'
@@ -12,6 +13,7 @@ on:
       - main
     paths:
       - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/reusable-pr-gate-typescript.yml'
       - '.github/workflows/smoke-test.yml'
       - 'actions/**'
       - 'tests/fixtures/projects/**'
@@ -169,3 +171,11 @@ jobs:
             exit 1
           fi
           echo "Verified: pytest failed with assertion as expected"
+
+  # ---------- Positive TypeScript fixture ----------
+  positive-typescript-sample:
+    name: smoke / typescript-sample (expect pass)
+    uses: ./.github/workflows/reusable-pr-gate-typescript.yml
+    with:
+      node-version: "20"
+      working-directory: tests/fixtures/projects/typescript-sample
