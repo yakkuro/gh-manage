@@ -54,6 +54,16 @@ def load_config(
         raise ConfigParseError(
             f"Failed to parse YAML in {path}: {e}. Check the file for syntax errors."
         ) from e
+    except UnicodeDecodeError as e:
+        raise ConfigParseError(
+            f"Config file {path} is not valid UTF-8: {e}. "
+            f"Re-save the file with UTF-8 encoding and try again."
+        ) from e
+    except OSError as e:
+        raise ConfigFileNotFoundError(
+            f"Cannot read config file {path}: {e}. "
+            f"Check that the file exists and is readable by the current user."
+        ) from e
 
     if not isinstance(raw, dict):
         raise ConfigParseError(

@@ -69,3 +69,56 @@ def test_validation_error_preserves_cause() -> None:
     with pytest.raises(ConfigValidationError) as excinfo:
         load_config(FIXTURES / "labels-invalid-bad-color.yml", LabelsConfig)
     assert isinstance(excinfo.value.__cause__, ValidationError)
+
+
+def test_non_utf8_file_raises_parse_error(tmp_path: Path) -> None:
+    """Files that aren't valid UTF-8 should raise ConfigParseError with an
+    actionable message — NOT bubble up as raw UnicodeDecodeError."""
+    bad = tmp_path / "bad-encoding.yml"
+    bad.write_bytes(b"version: 1\n# \x80\x81\x82 invalid utf-8 bytes\n")
+    with pytest.raises(ConfigParseError, match="not valid UTF-8"):
+        load_config(bad, LabelsConfig)
+
+
+def test_unreadable_file_raises_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OSError (e.g., PermissionError) during read_text should be caught and
+    re-raised as ConfigFileNotFoundError with an actionable message — NOT
+    bubble up as raw OSError."""
+    path = tmp_path / "unreadable.yml"
+    path.write_text("version: 1\n", encoding="utf-8")
+
+    original_read_text = Path.read_text
+
+    def fail_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == path.resolve():
+            raise PermissionError(13, "Permission denied")
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    with pytest.raises(ConfigFileNotFoundError, match="Cannot read config file"):
+        load_config(path, LabelsConfig)
+
+
+def test_os_error_preserves_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ConfigFileNotFoundError raised from an OSError must preserve the
+    original OSError on __cause__ so debuggers can see the raw errno/message."""
+    path = tmp_path / "unreadable.yml"
+    path.write_text("version: 1\n", encoding="utf-8")
+
+    original_read_text = Path.read_text
+
+    def fail_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == path.resolve():
+            raise PermissionError(13, "Permission denied")
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    with pytest.raises(ConfigFileNotFoundError) as excinfo:
+        load_config(path, LabelsConfig)
+    assert isinstance(excinfo.value.__cause__, PermissionError)
