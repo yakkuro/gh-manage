@@ -68,7 +68,8 @@ def load_config(
     if not isinstance(raw, dict):
         raise ConfigParseError(
             f"Config file {path} must contain a YAML mapping at top level, "
-            f"got {type(raw).__name__}."
+            f"got {type(raw).__name__}. Wrap the contents in a top-level "
+            f"dictionary (e.g., `version: 1\\ncategories: ...`) and try again."
         )
 
     version = raw.get("version")
@@ -89,5 +90,6 @@ def load_config(
         return model_cls(**raw)
     except ValidationError as e:
         raise ConfigValidationError(
-            f"Config file {path} failed validation:\n{e}"
+            f"Config file {path} failed validation:\n{e}\n"
+            f"Fix the validation errors above and try again."
         ) from e
