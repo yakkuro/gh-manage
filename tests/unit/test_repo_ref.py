@@ -1,22 +1,34 @@
-"""Tests for gh_manage.repo_ref.parse_repo."""
+"""Tests for gh_manage.repo_ref.parse_repo.
+
+NOTE: parse_repo intentionally does NOT validate GitHub's owner/repo
+naming rules. Codex's review of the Phase 5 checkpoint refactor flagged
+a regex-based validator as a behavior regression: it rejected valid
+names like `.github` (a well-known GitHub repo) while accepting invalid
+owner forms like `user_name` (usernames cannot contain underscores) and
+`foo--bar` (no consecutive hyphens). We now delegate naming validation
+to the `gh` CLI, which has authoritative rules and actionable errors.
+These tests only cover the normalization contract:
+  - `/` present → pass through unchanged
+  - `/` absent → prepend DEFAULT_OWNER
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from gh_manage.repo_ref import DEFAULT_OWNER, InvalidRepoRefError, parse_repo
+from gh_manage.repo_ref import DEFAULT_OWNER, parse_repo
 
 
-# Happy path — bare name
+# Happy path — bare name prepends DEFAULT_OWNER
 @pytest.mark.parametrize(
     "bare",
-    ["gh-manage", "port-registry", "llm-kb", "abc123", "a"],
+    ["gh-manage", "port-registry", "llm-kb", "abc123", "a", ".github"],
 )
 def test_bare_name_prepends_default_owner(bare: str) -> None:
     assert parse_repo(bare) == f"{DEFAULT_OWNER}/{bare}"
 
 
-# Happy path — fully qualified
+# Happy path — anything with `/` passes through unchanged
 @pytest.mark.parametrize(
     "qualified",
     [
@@ -24,48 +36,14 @@ def test_bare_name_prepends_default_owner(bare: str) -> None:
         "other-org/other-repo",
         "foo/bar",
         "A/B",
-        "user_name/repo.name",
+        "github/.github",  # well-known special repo starting with dot
     ],
 )
 def test_owner_slash_repo_passes_through(qualified: str) -> None:
     assert parse_repo(qualified) == qualified
 
 
-# Validation rejects invalid input
-@pytest.mark.parametrize(
-    "invalid",
-    [
-        "",  # empty
-        "/foo",  # leading slash
-        "foo/",  # trailing slash
-        "foo/bar/baz",  # too many segments
-        ".hidden",  # starts with dot
-        "-dash",  # starts with dash
-        "foo/.hidden",  # second segment starts with dot
-        "foo/-dash",  # second segment starts with dash
-        "foo bar",  # contains space
-        "foo@bar",  # contains @
-        "a b/c",  # space in first segment
-    ],
-)
-def test_invalid_repo_ref_raises_invalid_repo_ref_error(invalid: str) -> None:
-    with pytest.raises(InvalidRepoRefError, match="Invalid repo reference"):
-        parse_repo(invalid)
-
-
-def test_invalid_repo_ref_is_a_value_error_subclass() -> None:
-    """Callers that catch ValueError should also catch InvalidRepoRefError."""
-    with pytest.raises(ValueError):
-        parse_repo("bad spaces")
-
-
-def test_error_message_includes_the_bad_input() -> None:
-    """Actionable error — the user needs to see what they typed."""
-    with pytest.raises(InvalidRepoRefError, match=r"totally bad"):
-        parse_repo("totally bad")
-
-
-def test_error_message_mentions_owner_repo_format() -> None:
-    """Actionable error — tell the user what's expected."""
-    with pytest.raises(InvalidRepoRefError, match="owner/repo"):
-        parse_repo("bad@ref")
+def test_slash_only_is_passed_through_to_gh() -> None:
+    """Edge case: a raw `/` has no bare form to normalize, so it passes
+    through unchanged. `gh` will reject it with a classified GhError."""
+    assert parse_repo("/") == "/"

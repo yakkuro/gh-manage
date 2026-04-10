@@ -16,7 +16,7 @@ from gh_manage.github_api import labels as labels_api
 from gh_manage.github_client import GhError
 from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
-from gh_manage.repo_ref import InvalidRepoRefError, parse_repo
+from gh_manage.repo_ref import parse_repo
 
 DEFAULT_CONFIG_PATH = Path("config/labels.yml")
 
@@ -47,8 +47,7 @@ def _format_diff(diff: LabelsDiff) -> str:
 
 
 def _handle_errors(func: _F) -> _F:
-    """Decorator: catch GhError/ConfigError/InvalidRepoRefError and re-raise
-    as click.ClickException.
+    """Decorator: catch GhError/ConfigError and re-raise as click.ClickException.
 
     click.ClickException prints `Error: <msg>` to stderr and exits 1.
     """
@@ -57,7 +56,7 @@ def _handle_errors(func: _F) -> _F:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except (GhError, ConfigError, InvalidRepoRefError) as e:
+        except (GhError, ConfigError) as e:
             raise click.ClickException(str(e)) from e
 
     return wrapper  # type: ignore[return-value]
