@@ -609,7 +609,7 @@ Note: we do NOT commit yet. The package is not installable until Task 3 creates 
   If this plan is being executed by a subagent or autonomous flow, pause here and surface a confirmation to the user. Creating a GitHub repository is an action visible outside the local machine and should be explicitly confirmed.
 
   Prompt the user with:
-  > "About to create `yakkuro/gh-manage` as a **public** repository on GitHub, then push the local `main` branch. Proceed?"
+  > "About to create `yakkuro/gh-manage` as a **private** repository on GitHub, then push the local `main` branch. Proceed?"
 
   Do not continue until the user confirms.
 
@@ -619,7 +619,7 @@ Note: we do NOT commit yet. The package is not installable until Task 3 creates 
   ```bash
   cd ~/repos/gh-manage
   gh repo create yakkuro/gh-manage \
-      --public \
+      --private \
       --description "GitHub-based CI/CD, Issue management, and operational system for yakkuro/* repositories." \
       --source=. \
       --remote=origin
@@ -663,7 +663,7 @@ Note: we do NOT commit yet. The package is not installable until Task 3 creates 
   Expected JSON output includes:
   - `"name": "gh-manage"`
   - `"url": "https://github.com/yakkuro/gh-manage"`
-  - `"visibility": "PUBLIC"`
+  - `"visibility": "PRIVATE"`
   - `"defaultBranchRef": {"name": "main"}`
 
 ---
@@ -680,7 +680,7 @@ Run every check below and confirm each one passes. If any check fails, STOP and 
   ```bash
   gh repo view yakkuro/gh-manage --json name,visibility 2>&1
   ```
-  Expected: JSON with `"name": "gh-manage"` and `"visibility": "PUBLIC"`.
+  Expected: JSON with `"name": "gh-manage"` and `"visibility": "PRIVATE"`.
 
 - [ ] **AC-2: Local `uv sync` succeeds**
 
@@ -769,7 +769,7 @@ Run every check below and confirm each one passes. If any check fails, STOP and 
 
 ## Phase 0 Exit Checklist (summary)
 
-- [ ] `yakkuro/gh-manage` exists on GitHub as a public repo
+- [ ] `yakkuro/gh-manage` exists on GitHub as a private repo
 - [ ] Local `main` branch is pushed to `origin/main`
 - [ ] `uv sync` creates `.venv` and `uv.lock` successfully
 - [ ] `uv run pytest -v` collects 2 tests and both pass
