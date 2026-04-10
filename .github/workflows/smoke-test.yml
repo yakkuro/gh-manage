@@ -30,57 +30,91 @@ jobs:
       working-directory: tests/fixtures/projects/python-sample
 
   # ---------- Negative fixture: lint failure ----------
+  # GitHub Actions does NOT support continue-on-error at the job level for
+  # reusable workflow calls (jobs.<id>.uses). Negative fixtures therefore use
+  # a regular job that invokes the run-ruff composite action directly with
+  # step-level continue-on-error, then asserts the outcome via steps.<id>.outcome.
   negative-python-lint-fail:
-    name: smoke / python-lint-fail (expect fail)
-    uses: ./.github/workflows/reusable-pr-gate-python.yml
-    with:
-      python-version: "3.12"
-      working-directory: tests/fixtures/projects/python-lint-fail
-    continue-on-error: true
-
-  verify-python-lint-fail:
-    name: verify / python-lint-fail failed as expected
-    needs: negative-python-lint-fail
-    if: always()
+    name: smoke / python-lint-fail (expect ruff failure)
     runs-on: ubuntu-latest
     steps:
-      - name: Assert negative fixture failed
-        env:
-          RESULT: ${{ needs.negative-python-lint-fail.result }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/python-lint-fail
         run: |
           set -euo pipefail
-          echo "negative-python-lint-fail result: ${RESULT}"
-          if [[ "${RESULT}" == "failure" ]]; then
-            echo "✓ Expected failure achieved."
-            exit 0
+          uv sync
+
+      - name: Run ruff composite (expect failure)
+        id: ruff
+        continue-on-error: true
+        uses: ./actions/run-ruff
+        with:
+          working-directory: tests/fixtures/projects/python-lint-fail
+
+      - name: Assert ruff failed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.ruff.outcome }}
+        run: |
+          set -euo pipefail
+          echo "ruff outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::python-lint-fail was expected to FAIL ruff but got outcome=${OUTCOME}"
+            exit 1
           fi
-          echo "::error::python-lint-fail was expected to FAIL but got result=${RESULT}"
-          exit 1
+          echo "Lint failed as expected (outcome=${OUTCOME})"
 
   # ---------- Negative fixture: test failure ----------
   negative-python-test-fail:
-    name: smoke / python-test-fail (expect fail)
-    uses: ./.github/workflows/reusable-pr-gate-python.yml
-    with:
-      python-version: "3.12"
-      working-directory: tests/fixtures/projects/python-test-fail
-    continue-on-error: true
-
-  verify-python-test-fail:
-    name: verify / python-test-fail failed as expected
-    needs: negative-python-test-fail
-    if: always()
+    name: smoke / python-test-fail (expect pytest failure)
     runs-on: ubuntu-latest
     steps:
-      - name: Assert negative fixture failed
-        env:
-          RESULT: ${{ needs.negative-python-test-fail.result }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
         run: |
           set -euo pipefail
-          echo "negative-python-test-fail result: ${RESULT}"
-          if [[ "${RESULT}" == "failure" ]]; then
-            echo "✓ Expected failure achieved."
-            exit 0
+          uv sync
+
+      - name: Run pytest (expect failure)
+        id: pytest
+        continue-on-error: true
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
+        run: |
+          set -euo pipefail
+          uv run pytest -v
+
+      - name: Assert pytest failed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.pytest.outcome }}
+        run: |
+          set -euo pipefail
+          echo "pytest outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::python-test-fail was expected to FAIL pytest but got outcome=${OUTCOME}"
+            exit 1
           fi
-          echo "::error::python-test-fail was expected to FAIL but got result=${RESULT}"
-          exit 1
+          echo "Tests failed as expected (outcome=${OUTCOME})"
