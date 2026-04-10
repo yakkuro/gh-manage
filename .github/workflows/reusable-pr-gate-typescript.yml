@@ -1,10 +1,10 @@
-name: Reusable PR Gate (Python)
+name: Reusable PR Gate (TypeScript)
 
 on:
   workflow_call:
     inputs:
-      python-version:
-        description: "Python version to install (required)."
+      node-version:
+        description: "Node.js version to install (e.g., '20', '22'). Must be 20 or higher."
         required: true
         type: string
       working-directory:
@@ -16,19 +16,19 @@ on:
         description: "Dependency install command executed inside working-directory."
         required: false
         type: string
-        default: "uv sync"
+        default: "pnpm install --frozen-lockfile"
       test-command:
         description: "Test command executed inside working-directory."
         required: false
         type: string
-        default: "uv run pytest"
+        default: "pnpm test"
       lint:
-        description: "Run ruff check + format --check (fixed tool, internal pin)."
+        description: "Run eslint via the consumer's devDependencies (requires eslint.config.js + eslint/typescript-eslint/@eslint/js in devDeps)."
         required: false
         type: boolean
         default: true
       type-check:
-        description: "Run mypy on `src/` (fixed tool, internal pin)."
+        description: "Run tsc --noEmit (TypeScript version pinned internally)."
         required: false
         type: boolean
         default: true
@@ -37,11 +37,11 @@ on:
         required: false
         type: string
         default: ""
-      uv-version:
-        description: "uv release pin passed through to setup-python-uv."
+      pnpm-version:
+        description: "pnpm release pin passed through to setup-node-pnpm."
         required: false
         type: string
-        default: "0.5.0"
+        default: "10.33.0"
 
 permissions:
   contents: read
@@ -97,11 +97,11 @@ jobs:
       - name: Log gh-manage version
         uses: ./.gh-manage/actions/log-gh-manage-version
 
-      - name: Set up Python and uv
-        uses: ./.gh-manage/actions/setup-python-uv
+      - name: Set up Node and pnpm
+        uses: ./.gh-manage/actions/setup-node-pnpm
         with:
-          python-version: ${{ inputs.python-version }}
-          uv-version: ${{ inputs.uv-version }}
+          node-version: ${{ inputs.node-version }}
+          pnpm-version: ${{ inputs.pnpm-version }}
 
       - name: Install dependencies
         shell: bash
@@ -115,15 +115,15 @@ jobs:
           eval "${INSTALL_CMD}"
           echo "::endgroup::"
 
-      - name: Run ruff (if lint enabled)
+      - name: Run eslint (if lint enabled)
         if: inputs.lint
-        uses: ./.gh-manage/actions/run-ruff
+        uses: ./.gh-manage/actions/run-eslint
         with:
           working-directory: ${{ inputs.working-directory }}
 
-      - name: Run mypy (if type-check enabled)
+      - name: Run tsc (if type-check enabled)
         if: inputs.type-check
-        uses: ./.gh-manage/actions/run-mypy
+        uses: ./.gh-manage/actions/run-tsc
         with:
           working-directory: ${{ inputs.working-directory }}
 

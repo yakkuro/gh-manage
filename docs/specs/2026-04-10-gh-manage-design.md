@@ -279,6 +279,7 @@ gh-manage/
 - **責務**: TypeScript/Node リポジトリの PR 品質ゲート
 - **入力インターフェース**: `node-version`(必須)、`lint`(bool)、`type-check`(bool)、`package-manager`(pnpm/npm/yarn、default pnpm)、`install-command`(default "pnpm install --frozen-lockfile")、`test-command`(default "pnpm test")
 - **依存**: composite actions `setup-node-pnpm`, `run-eslint`, `run-tsc`, `log-gh-manage-version`
+- **v0.2.0 deviation**: v0.2.0 locks to pnpm only. The `package-manager` input is NOT implemented in this release — npm and yarn support are deferred to a future phase. `run-eslint` uses `pnpm exec eslint .` against the consumer's devDependencies (eslint 10.x flat config requires peer dependencies that do not resolve cleanly through `pnpm dlx`), while `run-tsc` pins TypeScript via `pnpm --package="typescript@<pin>" dlx tsc` (pnpm 10+ requires `--package` to disambiguate the multi-bin typescript package). See `docs/specs/2026-04-10-phase-2-typescript-design.md` for the full rationale.
 
 #### `reusable-ci-review.yml`
 

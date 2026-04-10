@@ -1,0 +1,19 @@
+{
+  "name": "typescript-lint-fail-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Negative fixture for gh-manage reusable-pr-gate-typescript.yml. eslint MUST fail with no-unused-vars; tsc and vitest must pass.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.19.17",
+    "eslint": "10.2.0",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.58.1",
+    "vitest": "4.1.4"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

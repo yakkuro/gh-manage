@@ -8,6 +8,41 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 _Nothing yet._
 
+## [0.2.0] - 2026-04-10
+
+Second release. Adds the TypeScript PR gate alongside the Phase 1 Python gate and fixes a latent `github.workflow_ref` parser bug shared by both reusables.
+
+### Added
+
+- **Reusable workflow `reusable-pr-gate-typescript.yml`** (Layer 3) — `install → lint → type-check → setup → test` pipeline for TypeScript/Node projects using `pnpm`. Inputs: `node-version` (required), `working-directory`, `install-command`, `test-command`, `lint`, `type-check`, `setup-command`, `pnpm-version`. Mirrors the `reusable-pr-gate-python.yml` structural pattern including the self-checkout block.
+- **Composite action `setup-node-pnpm`** (Layer 2) — installs a requested Node.js version and a pinned `pnpm` release. Pinned `pnpm` version: `10.33.0`. `setup-node`'s `cache: pnpm` feature is intentionally skipped in v0.2.0 (path-plumbing for non-root working-directory is deferred to a follow-up).
+- **Composite action `run-eslint`** (Layer 2) — runs `pnpm exec eslint .` using the consumer's `devDependencies`. Unlike Phase 1's `run-ruff` (which pins ruff via `uvx`), `run-eslint` does NOT pin eslint because eslint 10.x flat config requires peer dependencies (`typescript-eslint`, `@eslint/js`) that do not resolve cleanly through `pnpm dlx`. gh-manage recommends specific eslint family versions in `docs/usage/typescript.md` and the fixture `devDependencies`.
+- **Composite action `run-tsc`** (Layer 2) — runs `tsc --noEmit -p tsconfig.json` via `pnpm --package="typescript@<pinned>" dlx tsc`. Pinned `typescript` version: `6.0.2`. Uses the `pnpm --package=` form (not `pnpm dlx typescript@<ver> tsc`) because the `typescript` package ships multiple binaries (`tsc` and `tsserver`) and pnpm 10+ requires explicit disambiguation. This composite is the TypeScript analogue of Phase 1's `run-ruff` (standalone tool, pinned at gh-manage level).
+- **TypeScript fixture projects** — 3 new projects under `tests/fixtures/projects/`:
+  - `typescript-sample` — positive fixture; passes eslint + tsc + vitest cleanly
+  - `typescript-lint-fail` — negative fixture; triggers `@typescript-eslint/no-unused-vars` (grepped as `no-unused-vars` in smoke test)
+  - `typescript-type-fail` — negative fixture; triggers `TS2322` via a `const x: string = 42; void x;` pattern that keeps vitest runtime clean
+- **Smoke test workflow** — extended `.github/workflows/smoke-test.yml` with 3 new jobs mirroring the Phase 1 Python pattern:
+  - `positive-typescript-sample` uses the full reusable workflow via `./.github/workflows/reusable-pr-gate-typescript.yml`
+  - `negative-typescript-lint-fail` and `negative-typescript-type-fail` are regular jobs (not reusable calls) that invoke the composite actions with step-level `continue-on-error`, then verify BOTH the outcome is `failure` AND the direct-tool output contains the expected rule id / error code (`no-unused-vars` and `TS2322` respectively). This two-assertion pattern is inherited from Phase 1 learning #4.
+- **Consumer usage documentation** at `docs/usage/typescript.md` — prerequisites (eslint.config.js, tsconfig.json, pnpm-lock.yaml, eslint family devDeps), minimal example, input surface, tool versions (hybrid pinning explanation), example configs, disabling checks, troubleshooting, versioning.
+
+### Known limitations
+
+- **pnpm only**: Phase 2 v0.2.0 locks to `pnpm`. `npm` and `yarn` consumers are not supported in this release. The `package-manager` input from the main design spec is deferred to a future release.
+- **eslint pinning is recommendation-only**: gh-manage recommends eslint / typescript-eslint / @eslint/js versions via docs and fixture devDeps but does NOT enforce them. If a consumer's pins drift significantly, behavior may differ from gh-manage's smoke tests.
+- **Minimum Node 20**: driven by vitest 4.x engine constraint (`^20 || ^22 || >=24`). Consumers on Node 18 cannot use the fixture test runner, but may override `test-command` if their own test runner supports older Node.
+- **No `cache: pnpm`**: `setup-node-pnpm` intentionally skips `actions/setup-node`'s `cache: pnpm` feature in v0.2.0 because path-plumbing for non-root `working-directory` adds complexity. Cold pnpm installs run on every job; caching can be added in a follow-up if CI wall time becomes painful.
+- **Non-root `working-directory` in composites is not deeply tested**: the smoke test exercises `working-directory: tests/fixtures/projects/typescript-sample`, but no fixture exercises deep monorepo paths like `packages/client/`.
+- **Version skew detection**: Phase 2 does NOT test older-pnpm-generated lockfiles with pnpm 10 runtime, nor Node-version / TypeScript-target mismatches.
+- **Cross-repo invocation** has NOT been empirically validated in v0.2.0 (same constraint as Phase 1). Phase 3 (port-registry adoption) will be the first real cross-repo test for BOTH Python and TypeScript reusables. If issues arise, they will be hotfixed in v0.2.1 or v0.3.0.
+- **Pinned tool versions as of 2026-04-10**: `pnpm` `10.33.0`, `typescript` `6.0.2`. Fixture devDep recommendations: `eslint` `10.2.0`, `typescript-eslint` `8.58.1`, `@eslint/js` `10.0.1`, `vitest` `4.1.4`, `@types/node` `22.19.17`.
+- **Python tool refresh (uv / ruff / mypy) is deferred to v0.3.0**: Phase 1 pins from v0.1.0 remain active.
+
+### Fixed
+
+- **`github.workflow_ref` parser in both reusables** — `reusable-pr-gate-python.yml` and `reusable-pr-gate-typescript.yml` previously used `${VAR##*@}` (longest-prefix strip) to extract the gh-manage ref from `github.workflow_ref`. This truncated refs containing `@` (e.g., `release@candidate`), silently checking out the wrong ref. Replaced with `${VAR#*.yml@}` (shortest prefix) plus an explicit `*.yml@*` format check that fails fast with a clear `::error::` message. The Phase 1 workflow is patched as part of this release even though the bug was introduced in v0.1.0, because the fix is load-bearing for Phase 3 (port-registry adoption) cross-repo testing. Reported by Codex cross-agent review during PR #3.
+
 ## [0.1.0] - 2026-04-10
 
 First public release. This marks the initial usable state of gh-manage's Python PR gate.
@@ -39,5 +74,6 @@ _N/A — first release._
 - **Cross-repo self-checkout has NOT been empirically validated** in v0.1.0 — the same-repo dogfood (gh-manage's own `ci.yml`) and smoke-test are the only tested invocation paths. Phase 3 (port-registry adoption) will be the first real cross-repo test. If issues arise, they will be fixed in v0.1.1 or v0.2.0.
 - **Pinned tool versions are not the latest available** as of 2026-04-10. `uv` is pinned at 0.5.0 (latest: 0.11.6), `ruff` at 0.8.0 (latest: 0.15.10), `mypy` at 1.12.0 (latest: 1.20.0). Tool version refresh is scheduled for v0.2.0.
 
-[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.2.0
 [0.1.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.1.0
