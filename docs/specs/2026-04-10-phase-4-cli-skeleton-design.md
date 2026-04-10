@@ -25,7 +25,7 @@ Direct mapping from `docs/specs/2026-04-10-gh-manage-design.md` lines 850-858, w
 - [ ] `gh manage -h` and `gh manage --help` both display the subcommand list (6 entries: `init`, `apply`, `labels`, `protection`, `drift`, `issues`) and exit 0
 - [ ] Each of the 6 stubbed subcommands errors with `error: \`gh manage <name>\` is not yet implemented — scheduled for cli/v0.X.0 (Phase N).` on stderr and exits 1
 - [ ] `uv run pytest tests/unit/config` passes — all `LabelsConfig` validation tests including a valid fixture and 5+ invalid fixture patterns (missing version, wrong version, bad YAML, top-level list, bad hex color, empty category)
-- [ ] `uv run pytest tests/unit/cli` passes — all CLI smoke tests for `--version`, `--help`, `-h`, and each of the 6 stub subcommands
+- [ ] `uv run pytest tests/unit/cli` passes — all CLI smoke tests for `--version`, `--help`, `-h`, each of the 6 stub subcommands (stub fires with exit 1), each of the 6 subcommand `--help` flows (click's help dispatches before the stub, exit 0), and an unknown-subcommand case (click usage error, exit 2)
 - [ ] `uv run pytest` passes in total (existing `tests/test_sanity.py` + new unit tests)
 - [ ] Invalid `labels.yml` produces an actionable error message (path, reason, suggested fix) from the `ConfigError` exception hierarchy
 - [ ] `src/gh_manage/__init__.py` has `__version__ = "0.1.0"`
@@ -136,6 +136,8 @@ These are documented in `docs/usage/cli.md` prerequisites.
 - `gh extension upgrade` guarantees beyond the default gh CLI behavior
 - Binary distribution (PyInstaller, shiv) — uv is the single supported runner
 - Windows support beyond whatever uv + Python 3.12 + gh CLI provide (we target Linux/macOS primarily; no hostile testing on Windows)
+- **Config file discovery strategy** — Phase 4 ships `load_config(path, model_cls)` which takes an explicit path. How commands locate their config files (e.g., `--config <path>`, `./labels.yml`, repo root search) is a decision for each command when it becomes non-stub in Phase 5+. Phase 4 deliberately does not prescribe a search strategy so Phase 5+ can pick per-command based on actual needs.
+- **i18n / localization** — all help text, error messages, and docs are English-only in v0.1.0. Not planned for v0.x.y.
 
 ## Components
 
@@ -146,15 +148,26 @@ These are documented in `docs/usage/cli.md` prerequisites.
 # gh-manage: gh CLI extension entry point.
 # Delegates to the Python package via uv run, which handles virtualenv
 # and dependency resolution automatically from pyproject.toml.
+#
+# Requires:
+#   - uv on PATH and functional (not just present, also executable)
+#   - Python 3.12+ resolvable by uv (uv auto-installs if missing)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 if ! command -v uv >/dev/null 2>&1; then
-  echo "error: 'uv' is required to run gh-manage." >&2
+  echo "error: 'uv' is required to run gh-manage but was not found on PATH." >&2
   echo "Install via: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
   echo "Or: brew install uv" >&2
+  exit 1
+fi
+
+if ! uv --version >/dev/null 2>&1; then
+  echo "error: 'uv' is on PATH but is not functional (uv --version failed)." >&2
+  echo "The binary may be corrupted, have wrong permissions, or have a broken install." >&2
+  echo "Try reinstalling: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
   exit 1
 fi
 
@@ -305,15 +318,19 @@ def load_config(
     """Load a YAML config file and validate it against `model_cls`.
 
     Raises a ConfigError subclass with an actionable message on any failure.
+    Paths in error messages are always absolute so users can identify the file
+    regardless of the current working directory.
     """
-    path = Path(path)
+    # Normalize to an absolute path so error messages are unambiguous even
+    # when the caller passes a relative path.
+    path = Path(path).resolve()
     if not path.is_file():
         raise ConfigFileNotFoundError(
             f"Config file not found: {path}. Check the path and try again."
         )
 
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise ConfigParseError(
             f"Failed to parse YAML in {path}: {e}. "
@@ -336,7 +353,8 @@ def load_config(
         raise ConfigSchemaVersionError(
             f"Config file {path} uses unsupported version {version!r}. "
             f"This gh-manage release supports versions {supported_versions}. "
-            f"Upgrade gh-manage or downgrade the config."
+            f"Upgrade gh-manage or downgrade the config file's `version:` "
+            f"field to one of the supported versions."
         )
 
     try:
@@ -346,6 +364,12 @@ def load_config(
             f"Config file {path} failed validation:\n{e}"
         ) from e
 ```
+
+Explicit contract:
+
+- **Paths are resolved to absolute** before use (`Path(path).resolve()`) so that error messages always show the fully-qualified file path regardless of the user's current working directory. Tests use absolute fixture paths already and therefore don't change behavior.
+- **Files are read as UTF-8** (`read_text(encoding="utf-8")`) to avoid locale-dependent encoding bugs on Windows or non-UTF-8 systems.
+- **Version mismatch errors include both the found version and the supported list** so the user can choose between upgrading gh-manage or editing the config file.
 
 ### `src/gh_manage/models/labels.py` (new)
 
@@ -674,9 +698,34 @@ def test_stub_subcommand_exits_nonzero(subcommand: str) -> None:
     result = runner.invoke(main, [subcommand])
     assert result.exit_code == 1
     assert "not yet implemented" in result.output
+
+
+def test_unknown_subcommand_exits_with_click_usage_error() -> None:
+    """Unknown subcommands should get click's standard usage error (exit code 2)."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["totally-not-a-command"])
+    assert result.exit_code == 2
+    assert "No such command" in result.output or "Usage:" in result.output
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    ["init", "apply", "labels", "protection", "drift", "issues"],
+)
+def test_stub_subcommand_help_shows_help_without_firing_stub(subcommand: str) -> None:
+    """`gh manage <stub> --help` must display the subcommand's help text
+    (exit 0) instead of firing the "not yet implemented" stub error (exit 1).
+    click dispatches --help before invoking the command callback, so the
+    stub's `sys.exit(1)` must NOT run."""
+    runner = CliRunner()
+    result = runner.invoke(main, [subcommand, "--help"])
+    assert result.exit_code == 0
+    assert "Usage:" in result.output
+    # The stub callback must not have run — its error message starts with "error:".
+    assert "error:" not in result.output
 ```
 
-4 test functions, one is parametrized across 6 subcommands → 9 total test cases.
+5 test functions, two parametrized across 6 subcommands → 16 total test cases.
 
 ### Config loader tests (`tests/unit/config/test_load_config.py`)
 
@@ -761,11 +810,11 @@ def test_validation_error_preserves_cause() -> None:
 
 ### Total new test count
 
-- 9 CLI smoke tests (including 6 parametrized stub cases)
+- 16 CLI smoke tests (4 non-parametrized + 2 × 6 parametrized: stub-fires + stub-help + 1 unknown-command)
 - 9 config loader tests
 - 2 existing sanity tests (1 updated to expect `"0.1.0"`)
 
-= **18 new tests, 20 total** after Phase 4 merges.
+= **25 new tests, 27 total** after Phase 4 merges.
 
 ### End-to-end smoke (manual, during PR)
 
