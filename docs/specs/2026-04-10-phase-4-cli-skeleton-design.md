@@ -20,7 +20,7 @@ Ship `cli/v0.1.0` — the first release on gh-manage's CLI tag track. Provide a 
 
 Direct mapping from `docs/specs/2026-04-10-gh-manage-design.md` lines 850-858, with Phase 4-internal refinements:
 
-- [ ] `gh extension install yakkuro/gh-manage` succeeds from a clean environment (requires `uv` on the user's machine — documented in `docs/usage/cli.md` prerequisites)
+- [ ] `gh extension install yakkuro/gh-manage` succeeds as a **manual post-tag smoke test** (not a CI gate — see § Testing Strategy → "gh extension install smoke"). Runs locally after `cli/v0.1.0` is pushed, on a machine with `uv` on PATH, `gh` CLI 2.x+, `git`, and network access. Documented in `docs/usage/cli.md` prerequisites. If the smoke fails, cut a hotfix `cli/v0.1.1`
 - [ ] `gh manage --version` outputs `gh-manage, version 0.1.0` and exits 0
 - [ ] `gh manage -h` and `gh manage --help` both display the subcommand list (6 entries: `init`, `apply`, `labels`, `protection`, `drift`, `issues`) and exit 0
 - [ ] Each of the 6 stubbed subcommands errors with `error: \`gh manage <name>\` is not yet implemented — scheduled for cli/v0.X.0 (Phase N).` on stderr and exits 1
@@ -32,7 +32,7 @@ Direct mapping from `docs/specs/2026-04-10-gh-manage-design.md` lines 850-858, w
 - [ ] `pyproject.toml` has `version = "0.1.0"` (bumped from `"0.0.0"`)
 - [ ] `CHANGELOG-cli.md` exists with `[0.1.0] - 2026-04-10` entry
 - [ ] `docs/usage/cli.md` exists with installation prerequisites, `gh extension install` instructions, phase-to-command roadmap, and expected output demos
-- [ ] `gh-manage` executable shell wrapper exists at repo root with the executable bit set in git
+- [ ] `gh-manage` executable shell wrapper exists at repo root with the executable bit set in git — verify via `git ls-files --stage gh-manage` and confirm the mode starts with `100755` (not `100644`). PR template includes this as a reviewer checklist item.
 - [ ] Annotated tag `cli/v0.1.0` exists on `main` after merge
 - [ ] GitHub Release `cli/v0.1.0` published with CHANGELOG excerpt
 - [ ] 4-reviewer cross-agent review complete with no open CRITICAL/HIGH findings
@@ -261,7 +261,7 @@ def labels() -> None:
     sys.exit(1)
 ```
 
-Phase-to-command mapping:
+Phase-to-command mapping. The versions listed are *planned targets*, not currently-released tags. The mapping is non-binding — if Phase 5 splits or merges a command, these numbers shift, and the stub strings are updated in that phase's PR.
 
 | Subcommand | Stub message | Scheduled phase |
 |---|---|---|
@@ -272,7 +272,7 @@ Phase-to-command mapping:
 | `drift` | scheduled for cli/v0.5.0 (Phase 8) | Phase 8 — drift scanner |
 | `issues` | scheduled for cli/v0.5.0 (Phase 8) | Phase 8 — cross-repo issues |
 
-Stubs are verbatim copies except for the subcommand name, help text, and scheduled phase reference.
+Stubs are verbatim copies except for the subcommand name, help text, and scheduled phase reference. `docs/usage/cli.md` links to the same roadmap table so users who see the stub error can find the authoritative "when".
 
 ### `src/gh_manage/config.py` (new)
 
@@ -371,6 +371,8 @@ Explicit contract:
 - **Files are read as UTF-8** (`read_text(encoding="utf-8")`) to avoid locale-dependent encoding bugs on Windows or non-UTF-8 systems.
 - **Version mismatch errors include both the found version and the supported list** so the user can choose between upgrading gh-manage or editing the config file.
 
+**Schema evolution strategy (forward-looking note).** `load_config` accepts a `supported_versions: tuple[int, ...]` parameter defaulted to `(1,)` so a future `cli/v0.3.0` can pass `(1, 2)` and temporarily support both versions during a migration window. The concrete migration path (how v1 configs are converted to v2, deprecation warnings, CLI `gh manage config migrate` subcommand) is a Phase 5+ decision and is deliberately out of scope for Phase 4. Phase 4 only commits to: (a) the `supported_versions` parameter exists, (b) the error message on mismatch clearly names both the found version and the supported set.
+
 ### `src/gh_manage/models/labels.py` (new)
 
 ```python
@@ -465,7 +467,7 @@ Structural outline (exact text drafted during writing-plans phase):
 
 - **Title**: "gh-manage CLI — Consumer Usage"
 - **What it is**: 2-3 sentence summary
-- **Prerequisites**: `uv` installed, Python 3.12+ available via uv, `gh` CLI 2.x+, `git`
+- **Prerequisites**: `uv` installed and on `PATH` **before** running `gh extension install`, Python 3.12+ resolvable by uv (uv auto-installs if missing), `gh` CLI 2.x+, `git`. Explicit note: non-interactive environments (CI, sandboxed shells) must install uv first via their own provisioning step — the wrapper's error message is for interactive users only and cannot self-heal.
 - **Installation**: `gh extension install yakkuro/gh-manage`
 - **Phase 4 scope / current state**: all subcommands are stubs, only `--version` and `--help` do real work
 - **Minimal example**: `gh manage --version` + expected output block
@@ -566,9 +568,9 @@ Invalid file flow (e.g., `labels-invalid-bad-color.yml`):
 
 | Code | Meaning | Stream | Example |
 |---|---|---|---|
-| 0 | Success | stdout | `gh manage --version` |
-| 1 | Stubbed subcommand OR runtime error | stderr | `gh manage labels` (current Phase 4 state) |
-| 2 | User error (click's convention: invalid argv, missing required option) | stderr | `gh manage --unknown-flag` |
+| 0 | Success | stdout | `gh manage --version` → `gh-manage, version 0.1.0`; `gh manage labels --help` → help text |
+| 1 | Stubbed subcommand OR runtime error | stderr | `gh manage labels` → `error: gh manage labels is not yet implemented — scheduled for cli/v0.2.0 (Phase 5).` |
+| 2 | User error (click's convention: invalid argv, missing required option, unknown subcommand) | stderr | `gh manage --unknown-flag` or `gh manage totally-not-a-command` → click's `Usage: ... Error: No such command ...` |
 
 click handles code 2 automatically. Phase 4 code explicitly emits code 1 from stubs via `sys.exit(1)`. Successful CLI exits (code 0) do not need explicit `sys.exit(0)` — click returns normally.
 
@@ -649,6 +651,91 @@ tests/fixtures/config/                    # NEW — data, excluded from pytest c
 ```
 
 The `tests/fixtures/` directory is already excluded from pytest collection via the existing `[tool.pytest.ini_options] addopts = [..., "--ignore=tests/fixtures"]` setting in `pyproject.toml`. Phase 4 adds `config/` subdirectory of fixtures but does not need to modify the exclusion.
+
+### Test fixture contents
+
+Exact content of each YAML fixture under `tests/fixtures/config/`. Implementers should copy these verbatim.
+
+**`labels-valid.yml`** — minimal happy-path fixture with one category + two labels:
+
+```yaml
+version: 1
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "d73a4a"
+        description: "Something is broken"
+      - name: "feat"
+        color: "a2eeef"
+        description: "New feature or request"
+```
+
+**`labels-invalid-missing-version.yml`** — no `version:` field:
+
+```yaml
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "d73a4a"
+```
+
+**`labels-invalid-wrong-version.yml`** — `version: 99` (not in supported tuple):
+
+```yaml
+version: 99
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "d73a4a"
+```
+
+**`labels-invalid-bad-yaml.yml`** — unclosed quote, YAML syntax error:
+
+```yaml
+version: 1
+categories:
+  type:
+    description: "unterminated
+    labels:
+      - name: bug
+```
+
+**`labels-invalid-not-mapping.yml`** — top-level is a YAML list, not a mapping:
+
+```yaml
+- version: 1
+- categories: {}
+```
+
+**`labels-invalid-bad-color.yml`** — color is not 6-char hex:
+
+```yaml
+version: 1
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "not-a-color"
+```
+
+**`labels-invalid-empty-category.yml`** — category with empty `labels:` list (violates `Field(min_length=1)`):
+
+```yaml
+version: 1
+categories:
+  type:
+    description: "Issue type labels"
+    labels: []
+```
+
+All fixture files are **data**, not tests — pytest ignores them via the existing `--ignore=tests/fixtures` addopt, but `tests/unit/config/test_load_config.py` loads them by path at test time.
 
 ### CLI smoke tests (`tests/unit/cli/test_cli_entry.py`)
 
@@ -918,9 +1005,18 @@ A non-exhaustive list of things NOT to do in Phase 4, to keep the PR focused:
 - Do NOT write real `labels sync` logic — deferred to Phase 5
 - Do NOT add `branch-protection.yml`, `repos.yml`, or profile pydantic models — deferred to Phases 6-8
 - Do NOT add `config/labels.yml` with real labels — that is a Phase 5 deliverable (the fixture files under `tests/fixtures/config/` are sufficient for Phase 4 tests)
-- Do NOT touch `pyproject.toml` beyond the version bump — no new dependencies
+- Do NOT touch `pyproject.toml` beyond the version bump — no new dependencies. Note: `requires-python = ">=3.12"` is already set from Phase 0 (pyproject.toml line 7) and does not need to be re-added.
 - Do NOT modify the reusable workflows or smoke tests — those are Phase 1-3 artifacts and stable
 - Do NOT refactor existing Phase 0 code beyond the `__version__` bump and the `cli.py` modifications required to register subcommands
 - Do NOT add Python `__init__.py` level imports that re-export from submodules unless genuinely needed (YAGNI — keep imports explicit)
 - Do NOT add type: ignore comments without a justifying explanation
+
+## Appendix: spec-critique findings rejected with rationale
+
+The spec went through two rounds of `spec-critique`. Most findings were accepted and addressed inline; the following were **rejected** after analysis. Recording them here so future reviewers don't re-raise the same points.
+
+- **"Config file discovery strategy must be designed in Phase 4"** (rejected as premature). Phase 4 intentionally ships `load_config(path, model_cls)` with an explicit path parameter. Each command's config-file location is a Phase 5+ decision driven by real command semantics (e.g., `labels sync --config <path>` vs. repo-root `labels.yml` discovery). Prescribing a uniform strategy now would be speculative and risk being wrong for the first real consumer. Documented explicitly in § Non-goals.
+- **"ConfigError subclasses should all chain `__cause__` consistently"** (rejected as already correct). `ConfigParseError` chains the underlying `yaml.YAMLError` via `raise ... from e`, and `ConfigValidationError` chains the underlying `pydantic.ValidationError` via `raise ... from e`. `ConfigFileNotFoundError` and `ConfigSchemaVersionError` have no underlying exception to chain — they are raised from boolean checks, not from wrapping an exception. Adding `from None` is not required and would only add noise.
+- **"Version field might be nested in fixture files causing test mismatch"** (rejected as non-issue). All LabelsConfig fixtures have `version:` at the top level (see § Test fixture contents for exact file contents). The pydantic model defines `version: int` at the LabelsConfig root. No nesting mismatch is possible.
+- **"pyproject.toml requires-python should be shown in the spec"** (rejected as already done in Phase 0). `requires-python = ">=3.12"` is at `pyproject.toml` line 7, added in Phase 0. Phase 4 does not modify this line.
 - Do NOT add coverage thresholds or mutation testing — Phase 4 is too small to set meaningful numbers
