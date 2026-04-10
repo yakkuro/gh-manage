@@ -22,7 +22,7 @@ Directly from `docs/specs/2026-04-10-gh-manage-design.md` lines 837-843, with Ph
 
 - [ ] `.github/workflows/reusable-pr-gate-typescript.yml` exists with the documented input surface
 - [ ] `actions/setup-node-pnpm/action.yml`, `actions/run-eslint/action.yml`, `actions/run-tsc/action.yml` exist; shared `actions/log-gh-manage-version/` is unchanged
-- [ ] `tests/fixtures/projects/typescript-sample/` exists and passes `pnpm install --frozen-lockfile && pnpm dlx eslint@<pin> . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` locally and via smoke-test
+- [ ] `tests/fixtures/projects/typescript-sample/` exists and passes `pnpm install --frozen-lockfile && pnpm exec eslint . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` locally and via smoke-test
 - [ ] `tests/fixtures/projects/typescript-lint-fail/` triggers a `no-unused-vars` eslint violation; smoke-test negative job is green (outcome + reason verified)
 - [ ] `tests/fixtures/projects/typescript-type-fail/` triggers a `TS2322` type error; smoke-test negative job is green (outcome + reason verified)
 - [ ] `docs/usage/typescript.md` exists, mirroring the structure of `docs/usage/python.md`
@@ -57,13 +57,13 @@ Layer 1: Shell scripts
 ### Inherited invariants from Phase 1 (must not drift)
 
 - **Self-checkout pattern**: Layer 3 workflow extracts the caller-provided gh-manage ref from `github.workflow_ref` and checks out `yakkuro/gh-manage` into `.gh-manage/`. Composite actions are referenced via `./.gh-manage/actions/<name>`. This is load-bearing for cross-repo reuse.
-- **Tool pin location**: eslint and TypeScript versions are pinned inside their composite actions via `pnpm dlx "eslint@<pin>"` and `pnpm dlx "typescript@<pin>"`. Bumping pins is gh-manage's responsibility, not the consumer's. This mirrors Phase 1's `uvx "ruff@<pin>"` / `uv run --with "mypy==<pin>"`.
+- **Tool pin location (hybrid)**: TypeScript is pinned inside `run-tsc` via `pnpm dlx "typescript@<pin>"` (mirror of Phase 1's `uvx "ruff@<pin>"`; tsc has no peer deps and runs cleanly as a standalone binary). eslint is NOT pinned inside `run-eslint` and instead uses `pnpm exec eslint` against the consumer's `devDependencies` (because eslint 10.x flat config requires peer dependencies like `typescript-eslint` and `@eslint/js` that do not resolve reliably through `pnpm dlx`, and pinning eslint rigidly defeats its plugin-host nature). gh-manage still owns the recommended eslint version via `docs/usage/typescript.md` and the three fixture projects. This hybrid is analogous to Phase 1's `run-ruff` (pinned) vs `run-mypy` (project-environment-aware).
 - **Shell discipline**: every shell step opens with `set -euo pipefail`, uses `shell: bash` explicitly, passes inputs through an `env:` block (never `${{ inputs.x }}` directly in the script body), and prints actionable `::error::` messages on failure. No `|| true`, no bare catches.
 - **Boolean opt-out**: `lint` and `type-check` inputs are booleans, not tool-selection strings. Consumer cannot swap eslint for another linter — gh-manage's opinionated stance.
 
 ### New for Phase 2
 
-- **Consumer contract**: consumer repo must have `package.json`, `pnpm-lock.yaml`, `eslint.config.js` (flat config; eslint 9.x), and `tsconfig.json` at `working-directory`. This is analogous to Phase 1's `pyproject.toml` requirement.
+- **Consumer contract**: consumer repo must have `package.json`, `pnpm-lock.yaml`, `eslint.config.js` (flat config; eslint 10.x), `tsconfig.json`, and `eslint` / `typescript-eslint` / `@eslint/js` in `devDependencies` at `working-directory`. This is analogous to Phase 1's `pyproject.toml` requirement with the additional eslint peer-dep constraint.
 - **pnpm bootstrap order**: `setup-node-pnpm` runs `pnpm/action-setup@v4` *before* `actions/setup-node@v4`. This order is the canonical pnpm+Node pattern and is kept even though v0.2.0 skips `cache: pnpm` (so that adding caching in a follow-up is a one-line addition to the composite).
 - **Package manager scope**: v0.2.0 locks to pnpm only. The `package-manager` input from the original design spec (pnpm/npm/yarn) is NOT implemented in this phase; a follow-up phase can add npm/yarn if a consumer demands it. This deviation is recorded in the v0.2.0 CHANGELOG and `docs/usage/typescript.md` prerequisites.
 
@@ -76,7 +76,7 @@ Layer 1: Shell scripts
 - Cross-repo empirical validation — deferred to Phase 3 (port-registry adoption)
 - Caching `pnpm-lock.yaml` via `setup-node`'s `cache: pnpm` — deferred for path-plumbing reasons documented in the `setup-node-pnpm` component section
 - **Non-root `working-directory` testing**: all 3 fixtures live at top-level subdirectories under `tests/fixtures/projects/`; the reusable workflow IS invoked with `working-directory: tests/fixtures/projects/typescript-sample` in the smoke test, so the non-root case IS exercised. But there are no fixtures testing deeper nesting (e.g., monorepo `packages/client/`), nor is the `install-command`/`test-command` interaction with deep paths validated beyond what Phase 1 already tested. Deep-nested working-directory support is deferred to Phase 3 where port-registry will exercise it.
-- **Version skew detection**: the spec does NOT test pnpm-8-generated lockfiles with pnpm-9 runtime, nor Node-version / TypeScript-target mismatches (e.g., Node 18 with `target: ES2024`). These are realistic Phase 3 cross-repo failure modes and are left for hotfix in v0.2.1 if they surface.
+- **Version skew detection**: the spec does NOT test older-pnpm-generated lockfiles with pnpm 10 runtime, nor Node-version / TypeScript-target mismatches (e.g., Node 20 with a newer-than-supported target). These are realistic Phase 3 cross-repo failure modes and are left for hotfix in v0.2.1 if they surface.
 
 ### Main design spec deviation to record
 
@@ -99,9 +99,9 @@ The main design spec (`docs/specs/2026-04-10-gh-manage-design.md` line 280) list
 | `setup-command` | string | `""` | |
 | `pnpm-version` | string | exact patch version, hardcoded during plan phase (see below) | |
 
-**pnpm-version default resolution**: The plan author runs `pnpm view pnpm version` on 2026-04-10 (or at plan start), picks the exact patch (e.g., `9.15.2`), and hardcodes that value as the `default:` in `reusable-pr-gate-typescript.yml` AND in `actions/setup-node-pnpm/action.yml`. No placeholder string (`"latest"`, `""`) is allowed — both defaults must be concrete semver at commit time. Same pattern applies to `eslint-version` and `typescript-version` in their respective composite actions.
+**pnpm-version default resolution**: The plan author runs `npm view pnpm version` on 2026-04-10 (or at plan start), picks the exact patch (e.g., `10.33.0`), and hardcodes that value as the `default:` in `reusable-pr-gate-typescript.yml` AND in `actions/setup-node-pnpm/action.yml`. No placeholder string (`"latest"`, `""`) is allowed — both defaults must be concrete semver at commit time. Same pattern applies to `typescript-version` in `run-tsc`. There is NO `eslint-version` input (see Tool pin location above — eslint is consumer-owned).
 
-**Node version requirement**: `node-version` is consumer-supplied, but gh-manage's tool pins require Node 18+ (TypeScript 5.x minimum). The input description documents this: `"Node.js version (e.g., '20', '22'). Must be 18 or higher."`. Consumers passing `"14"` or similar will see tsc or install failures with unrelated-looking error messages; this is intentional — gh-manage does not add runtime version guards.
+**Node version requirement**: `node-version` is consumer-supplied, but gh-manage's toolchain requires **Node 20 or higher** — this constraint is driven by `vitest 4.x`'s engine requirement (`^20 || ^22 || >=24`). The input description documents this: `"Node.js version (e.g., '20', '22'). Must be 20 or higher."`. Consumers passing older versions will see vitest or install failures with unrelated-looking error messages; this is intentional — gh-manage does not add runtime version guards.
 
 **Pipeline** (preserves Phase 1 order so consumers can reason about both reusables uniformly):
 
@@ -132,16 +132,16 @@ The main design spec (`docs/specs/2026-04-10-gh-manage-design.md` line 280) list
 
 #### `actions/run-eslint/action.yml`
 
-- **Inputs**: `working-directory` (default `"."`), `eslint-version` (default pinned)
+- **Inputs**: `working-directory` (default `"."`)
 - **Steps**: one inline shell step
   ```
   set -euo pipefail
   echo "::group::eslint"
-  pnpm dlx "eslint@${ESLINT_VERSION}" .
+  pnpm exec eslint .
   echo "::endgroup::"
   ```
-  `ESLINT_VERSION` passed via `env:` block.
-- **Assumes**: consumer has `eslint.config.js` (flat config) in `working-directory`. Missing config → eslint exits non-zero with a self-explanatory error.
+- **Assumes**: consumer has `eslint.config.js` (flat config) in `working-directory` AND has `eslint`, `typescript-eslint`, `@eslint/js` in `devDependencies`. `pnpm install` must have run before this composite. Missing config → eslint exits non-zero with a self-explanatory error.
+- **Why not `pnpm dlx`**: eslint 10.x flat config imports `typescript-eslint` and `@eslint/js` as peer dependencies. Stuffing them through `pnpm dlx --package eslint --package typescript-eslint --package @eslint/js` creates a temporary env whose `node_modules` path is not guaranteed to be resolvable from a config file loaded against the consumer's cwd. The `pnpm exec` approach is simpler, matches the main design spec (line 305 of `2026-04-10-gh-manage-design.md`), and is analogous to Phase 1's `run-mypy` using `uv run --with` (which runs inside the project environment). Unlike ruff (standalone binary) and tsc (standalone compiler), eslint is inherently a plugin host, so pinning its version rigidly inside a composite action is unproductive. gh-manage's `docs/usage/typescript.md` recommends specific versions; fixtures pin them in `devDependencies`.
 
 #### `actions/run-tsc/action.yml`
 
@@ -187,7 +187,7 @@ All under `tests/fixtures/projects/typescript-*/`. Each fixture is a minimal but
   ```
 - `tests/index.test.ts` — identical to `typescript-sample`; passes because vitest runtime ignores the unused local
 - Expected: **eslint fails** with `no-unused-vars` in stdout; **tsc clean** (strict mode does NOT enable `noUnusedLocals`, so tsc ignores the local); **vitest passes** when run directly
-- Rationale: `no-unused-vars` is a core rule in `@eslint/js/recommended`, stable across 9.x, and the TS analogue of Phase 1's ruff `F401`. Placing the unused local inside a function body (not module scope) keeps it from being ambiguous with tsc's optional `noUnusedLocals` check.
+- Rationale: `no-unused-vars` is a core rule in `@eslint/js/recommended`, stable across 9.x and 10.x, and the TS analogue of Phase 1's ruff `F401`. Note: `@typescript-eslint/no-unused-vars` is the effective rule when `typescript-eslint` is active (the plain `no-unused-vars` is disabled in the fixture's eslint.config.js to avoid double reporting). The smoke-test grep targets the substring `no-unused-vars` which matches both rule ids. Placing the unused local inside a function body (not module scope) keeps it from being ambiguous with tsc's optional `noUnusedLocals` check.
 
 #### `typescript-type-fail/`
 
@@ -222,7 +222,7 @@ Add 3 new jobs, preserving Phase 1's 3 Python jobs untouched.
   3. `pnpm install --frozen-lockfile` inside the fixture dir
   4. `./actions/run-eslint` with `continue-on-error: true` and `id: eslint`
   5. Assert `steps.eslint.outcome == 'failure'`
-  6. Direct tool run: `pnpm dlx "eslint@<pin>" .` inside fixture dir, grep stdout for `no-unused-vars`, fail if not found
+  6. Direct tool run: `pnpm exec eslint .` inside fixture dir, grep stdout for `no-unused-vars`, fail if not found
 - **`negative-typescript-type-fail`** — regular job, mirror of above but with `./actions/run-tsc` and `TS2322` grep target
 
 Extend the `paths:` filter on `pull_request` and `push` triggers to include:
@@ -330,7 +330,7 @@ Every shell step in every composite action and the reusable workflow:
 | tsc reports type error | `run-tsc` step | tsc output (TS error codes + file:line) | fail, job red |
 | setup-command fails | inline shell | `::error::setup-command failed: <cmd>` | fail |
 | test-command fails | inline shell | test runner output | fail |
-| `pnpm dlx eslint@<pin>` cannot resolve version | `run-eslint` | pnpm stderr — visibly different from "eslint found a bug" because output won't contain rule ids | fail |
+| `pnpm exec eslint` fails to spawn (missing devDep) | `run-eslint` | pnpm stderr — visibly different from "eslint found a bug" because output won't contain rule ids | fail |
 
 ### Negative-fixture discipline (Phase 1 learning #4)
 
@@ -345,7 +345,7 @@ Phase 1 nearly shipped a broken composite action because negative fixtures initi
 
 Concrete Phase 2 assertions:
 
-- **`negative-typescript-lint-fail`**: direct run `pnpm dlx "eslint@<pin>" .` in the fixture dir; grep stdout for the literal string `no-unused-vars`.
+- **`negative-typescript-lint-fail`**: direct run `pnpm exec eslint .` in the fixture dir; grep stdout for the literal string `no-unused-vars`.
 - **`negative-typescript-type-fail`**: direct run `pnpm dlx "typescript@<pin>" tsc --noEmit`; grep stdout for the literal string `TS2322`.
 
 Both identifiers are stable: `no-unused-vars` is a core eslint rule present in `@eslint/js/recommended`; `TS2322` has been the TypeScript type-assignment-mismatch error code since the early versions of tsc. If either the outcome OR reason assertion fails, the smoke-test job fails with a clear `::error::` explaining which check failed and the captured output.
@@ -365,7 +365,7 @@ Both identifiers are stable: `no-unused-vars` is a core eslint rule present in `
 
 | Layer | What | Where | When |
 |---|---|---|---|
-| **L1** — fixture local verification | `pnpm install && pnpm dlx eslint@<pin> . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` inside each fixture | developer workstation | manual during plan/implement phase |
+| **L1** — fixture local verification | `pnpm install && pnpm exec eslint . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` inside each fixture | developer workstation | manual during plan/implement phase |
 | **L2** — smoke-test.yml | Reusable workflow + composite actions via GHA on a PR | CI | every PR touching Phase 2 files |
 
 No L3 (external consumer) test until Phase 3.
@@ -392,21 +392,21 @@ All 6 must be green before merge.
 # typescript-sample (expect all exit 0)
 cd tests/fixtures/projects/typescript-sample
 pnpm install --frozen-lockfile
-pnpm dlx "eslint@<pin>" .
+pnpm exec eslint .
 pnpm dlx "typescript@<pin>" tsc --noEmit
 pnpm test
 
 # typescript-lint-fail (eslint expected to fail with no-unused-vars)
 cd tests/fixtures/projects/typescript-lint-fail
 pnpm install --frozen-lockfile
-pnpm dlx "eslint@<pin>" . ; echo "exit=$?"   # expect non-zero + 'no-unused-vars' in output
+pnpm exec eslint . ; echo "exit=$?"   # expect non-zero + 'no-unused-vars' in output
 pnpm dlx "typescript@<pin>" tsc --noEmit
 pnpm test
 
 # typescript-type-fail (tsc expected to fail with TS2322)
 cd tests/fixtures/projects/typescript-type-fail
 pnpm install --frozen-lockfile
-pnpm dlx "eslint@<pin>" .
+pnpm exec eslint .
 pnpm dlx "typescript@<pin>" tsc --noEmit ; echo "exit=$?"   # expect non-zero + 'TS2322' in output
 pnpm test
 ```
@@ -415,7 +415,7 @@ pnpm test
 
 For each negative fixture, during local L1 verification the implementer MUST:
 
-1. **Exit-code check**: run the tool (`pnpm dlx eslint@<pin> .` or `pnpm dlx typescript@<pin> tsc --noEmit`) — confirm non-zero exit status.
+1. **Exit-code check**: run the tool (`pnpm exec eslint .` or `pnpm dlx typescript@<pin> tsc --noEmit`) — confirm non-zero exit status.
 2. **Reason check**: capture stderr+stdout and `grep` for the expected identifier (`no-unused-vars` or `TS2322`). Confirm the identifier appears in the captured output.
 3. **Isolation check**: the OTHER tool (eslint for type-fail, tsc for lint-fail) must exit 0. This proves the fixture's failure is isolated to the intended dimension and isn't leaking into the other check.
 4. **Vitest check**: `pnpm test` must exit 0. This proves the fixture's test suite is runnable independent of lint/type errors.
@@ -452,12 +452,15 @@ Before claiming Phase 2 complete, tick all Acceptance Criteria above, run the cr
 
 ### Version pins to be resolved in the plan phase
 
-Values are determined by running `pnpm view <pkg> version` (or `npm view`) at the start of the implementation session on 2026-04-10 and committing the chosen pins into the composite actions. The CHANGELOG will record the exact pins chosen.
+Values were resolved by running `npm view <pkg> version` at the start of Phase 2 implementation on 2026-04-10. Note: these are newer than the initial plan-writing assumptions (which expected eslint 9.x and TypeScript 5.x); the jump is 1 major per tool but the APIs used (flat config via `tseslint.config()`, `moduleResolution: Bundler`) remain backwards compatible. The CHANGELOG records the exact pins chosen.
 
-- pnpm: latest stable `9.x` line (exact patch determined at plan phase via `pnpm view pnpm version`)
-- eslint: latest stable `9.x` line (via `npm view eslint version`)
-- typescript: latest stable `5.x` line (via `npm view typescript version`)
-- vitest: latest stable `2.x` or `3.x` line (fixture-only; less critical to pin precisely)
+- pnpm: `10.33.0` (pinned inside `setup-node-pnpm` composite and reusable workflow default)
+- eslint: `10.2.0` (fixture devDependencies only; NOT pinned in the `run-eslint` composite action — consumer-owned per the hybrid pin strategy)
+- `@eslint/js`: `10.0.1` (fixture devDependencies; co-versioned with eslint)
+- `typescript-eslint`: `8.58.1` (fixture devDependencies; peer-dep compat: `eslint ^8.57.0 || ^9.0.0 || ^10.0.0` and `typescript >=4.8.4 <6.1.0` — both satisfied)
+- typescript: `6.0.2` (pinned inside `run-tsc` composite action)
+- vitest: `4.1.4` (fixture devDependencies only; its engine constraint `^20 || ^22 || >=24` drives the **Node 20+ minimum** for consumers)
+- `@types/node`: `22.19.17` (fixture devDependencies; tracks Node 22 LTS line)
 
 ## References
 
