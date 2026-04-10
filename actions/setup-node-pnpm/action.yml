@@ -1,0 +1,38 @@
+name: Set up Node and pnpm
+description: >
+  Install a requested Node.js version and a pinned pnpm release.
+  This composite is the Node/pnpm counterpart to setup-python-uv.
+  pnpm is installed BEFORE actions/setup-node to keep the canonical
+  ordering pattern (even though v0.2.0 skips `cache: pnpm` — see
+  the Phase 2 design spec for caching rationale).
+
+inputs:
+  node-version:
+    description: "Node.js version to install (e.g., '20', '22'). Must be 20 or higher (driven by vitest 4.x engine constraint)."
+    required: true
+  pnpm-version:
+    description: "pnpm release pin. Bumping this is a gh-manage concern, not the consumer's."
+    required: false
+    default: "10.33.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm (pinned)
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Verify Node and pnpm are available
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::versions"
+        node --version
+        pnpm --version
+        echo "::endgroup::"
