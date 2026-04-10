@@ -1,0 +1,115 @@
+name: Reusable PR Gate (Python)
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version to install (required)."
+        required: true
+        type: string
+      working-directory:
+        description: "Project directory inside the repo. Defaults to repo root."
+        required: false
+        type: string
+        default: "."
+      install-command:
+        description: "Dependency install command executed inside working-directory."
+        required: false
+        type: string
+        default: "uv sync"
+      test-command:
+        description: "Test command executed inside working-directory."
+        required: false
+        type: string
+        default: "uv run pytest"
+      lint:
+        description: "Run ruff check + format --check (fixed tool, internal pin)."
+        required: false
+        type: boolean
+        default: true
+      type-check:
+        description: "Run mypy on `src/` (fixed tool, internal pin)."
+        required: false
+        type: boolean
+        default: true
+      setup-command:
+        description: "Optional shell command executed after install, before tests."
+        required: false
+        type: string
+        default: ""
+      uv-version:
+        description: "uv release pin passed through to setup-python-uv."
+        required: false
+        type: string
+        default: "0.5.0"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PR Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log gh-manage version
+        uses: ./actions/log-gh-manage-version
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: ${{ inputs.python-version }}
+          uv-version: ${{ inputs.uv-version }}
+
+      - name: Install dependencies
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          INSTALL_CMD: ${{ inputs.install-command }}
+        run: |
+          set -euo pipefail
+          echo "::group::install"
+          eval "${INSTALL_CMD}"
+          echo "::endgroup::"
+
+      - name: Run ruff (if lint enabled)
+        if: inputs.lint
+        uses: ./actions/run-ruff
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Run mypy (if type-check enabled)
+        if: inputs.type-check
+        uses: ./actions/run-mypy
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Run setup command (if provided)
+        if: inputs.setup-command != ''
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SETUP_CMD: ${{ inputs.setup-command }}
+        run: |
+          set -euo pipefail
+          echo "::group::setup-command"
+          if ! eval "${SETUP_CMD}"; then
+            echo "::error::setup-command failed: ${SETUP_CMD}"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      - name: Run tests
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_CMD: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          echo "::group::test"
+          eval "${TEST_CMD}"
+          echo "::endgroup::"
