@@ -10,27 +10,17 @@ from typing import Any, TypeVar
 
 import click
 
-from gh_manage import github_client, labels_sync
+from gh_manage import labels_sync
 from gh_manage.config import ConfigError, load_config
+from gh_manage.github_api import labels as labels_api
 from gh_manage.github_client import GhError
 from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
+from gh_manage.repo_ref import parse_repo
 
-DEFAULT_OWNER = "yakkuro"
 DEFAULT_CONFIG_PATH = Path("config/labels.yml")
 
 _F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _parse_repo(repo: str) -> str:
-    """Normalize bare name to owner/repo (Q6 C).
-
-    Called by ALL THREE subcommands (sync, diff, show) on their `<repo>`
-    argument to keep repo normalization consistent.
-    """
-    if "/" in repo:
-        return repo
-    return f"{DEFAULT_OWNER}/{repo}"
 
 
 def _format_diff(diff: LabelsDiff) -> str:
@@ -118,9 +108,9 @@ def sync(
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
 
-    qualified = _parse_repo(repo)
+    qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
-    current = github_client.list_labels(qualified)
+    current = labels_api.list_labels(qualified)
 
     diff = labels_sync.compute_diff(current, config, prune=prune)
 
@@ -162,9 +152,9 @@ def sync(
 )
 @_handle_errors
 def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
-    qualified = _parse_repo(repo)
+    qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
-    current = github_client.list_labels(qualified)
+    current = labels_api.list_labels(qualified)
 
     diff = labels_sync.compute_diff(current, config, prune=prune)
 
@@ -186,7 +176,7 @@ def show(repo: str) -> None:
     """Show does NOT load config/labels.yml — it lists the repo's current
     state. No --config flag, no config validation. The only failure modes
     are GhError subclasses from the list_labels call."""
-    qualified = _parse_repo(repo)
-    current = github_client.list_labels(qualified)
+    qualified = parse_repo(repo)
+    current = labels_api.list_labels(qualified)
     for label in sorted(current, key=lambda lb: lb.name):
         click.echo(f"{label.name}  color={label.color}  desc={label.description!r}")

@@ -13,8 +13,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from gh_manage import github_client
-from gh_manage.github_client import Label
+from gh_manage.github_api import labels as labels_api
+from gh_manage.github_api.labels import Label
 from gh_manage.models.labels import LabelsConfig, LabelSpec
 
 
@@ -120,7 +120,7 @@ def compute_diff(
 
     Normalization (applied before any equality check):
       - Color: spec.color.lower() vs current.color (already lowercase from
-        github_client.list_labels normalization).
+        github_api.labels.list_labels normalization).
       - Description: (spec.description or "") vs current.description
         (already "" if GitHub returned null).
     """
@@ -195,8 +195,8 @@ def apply_diff(
       3. Updates — same-name color/desc changes.
       4. Deletes — last, so a failed delete doesn't orphan dependent state.
 
-    Fail-fast semantics: on the first GhError from github_client, the
-    exception propagates to the caller. No rollback; operations are
+    Fail-fast semantics: on the first GhError from the github_api helpers,
+    the exception propagates to the caller. No rollback; operations are
     idempotent, so re-running after fixing the cause picks up remaining work.
 
     `progress` is called with a one-line description BEFORE each operation.
@@ -204,13 +204,13 @@ def apply_diff(
     """
     for rename in diff.renames:
         progress(f"~ {rename.old_name} → {rename.new_label.name}")
-        github_client.update_label(repo, rename.old_name, rename.new_label)
+        labels_api.update_label(repo, rename.old_name, rename.new_label)
     for create in diff.creates:
         progress(f"+ {create.label.name}")
-        github_client.create_label(repo, create.label)
+        labels_api.create_label(repo, create.label)
     for update in diff.updates:
         progress(f"≈ {update.label.name}")
-        github_client.update_label(repo, update.label.name, update.label)
+        labels_api.update_label(repo, update.label.name, update.label)
     for delete in diff.deletes:
         progress(f"- {delete.name}")
-        github_client.delete_label(repo, delete.name)
+        labels_api.delete_label(repo, delete.name)
