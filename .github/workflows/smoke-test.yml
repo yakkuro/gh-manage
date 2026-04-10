@@ -1,0 +1,86 @@
+name: Smoke Test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/smoke-test.yml'
+      - 'actions/**'
+      - 'tests/fixtures/projects/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/smoke-test.yml'
+      - 'actions/**'
+      - 'tests/fixtures/projects/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------- Positive fixture ----------
+  positive-python-sample:
+    name: smoke / python-sample (expect pass)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-sample
+
+  # ---------- Negative fixture: lint failure ----------
+  negative-python-lint-fail:
+    name: smoke / python-lint-fail (expect fail)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-lint-fail
+    continue-on-error: true
+
+  verify-python-lint-fail:
+    name: verify / python-lint-fail failed as expected
+    needs: negative-python-lint-fail
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert negative fixture failed
+        env:
+          RESULT: ${{ needs.negative-python-lint-fail.result }}
+        run: |
+          set -euo pipefail
+          echo "negative-python-lint-fail result: ${RESULT}"
+          if [[ "${RESULT}" == "failure" ]]; then
+            echo "✓ Expected failure achieved."
+            exit 0
+          fi
+          echo "::error::python-lint-fail was expected to FAIL but got result=${RESULT}"
+          exit 1
+
+  # ---------- Negative fixture: test failure ----------
+  negative-python-test-fail:
+    name: smoke / python-test-fail (expect fail)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-test-fail
+    continue-on-error: true
+
+  verify-python-test-fail:
+    name: verify / python-test-fail failed as expected
+    needs: negative-python-test-fail
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert negative fixture failed
+        env:
+          RESULT: ${{ needs.negative-python-test-fail.result }}
+        run: |
+          set -euo pipefail
+          echo "negative-python-test-fail result: ${RESULT}"
+          if [[ "${RESULT}" == "failure" ]]; then
+            echo "✓ Expected failure achieved."
+            exit 0
+          fi
+          echo "::error::python-test-fail was expected to FAIL but got result=${RESULT}"
+          exit 1
