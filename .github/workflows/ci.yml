@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-gate:
+    name: PR Gate (self-dogfood)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: "."
+      install-command: "uv sync"
+      test-command: "uv run pytest"
