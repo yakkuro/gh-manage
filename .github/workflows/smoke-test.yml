@@ -251,3 +251,69 @@ jobs:
             exit 1
           fi
           echo "Verified: eslint failed with no-unused-vars as expected"
+
+  # ---------- Negative TypeScript fixture: type failure ----------
+  negative-typescript-type-fail:
+    name: smoke / typescript-type-fail (expect tsc failure)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node and pnpm
+        uses: ./actions/setup-node-pnpm
+        with:
+          node-version: "20"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-type-fail
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Run tsc composite (expect failure)
+        id: tsc
+        continue-on-error: true
+        uses: ./actions/run-tsc
+        with:
+          working-directory: tests/fixtures/projects/typescript-type-fail
+
+      - name: Assert tsc composite outcome is failure
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.tsc.outcome }}
+        run: |
+          set -euo pipefail
+          echo "tsc composite outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::run-tsc composite was expected to fail on typescript-type-fail but got outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "run-tsc composite failed as expected"
+
+      # Verify the failure REASON, not just the outcome.
+      - name: Verify failure reason is TS2322 (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-type-fail
+        run: |
+          set -euo pipefail
+          set +e
+          tsc_output=$(pnpm dlx "typescript@6.0.2" tsc --noEmit -p tsconfig.json 2>&1)
+          tsc_exit=$?
+          set -e
+          echo "tsc direct output:"
+          echo "${tsc_output}"
+          echo "tsc direct exit code: ${tsc_exit}"
+          if [[ ${tsc_exit} -eq 0 ]]; then
+            echo "::error::tsc exited 0 on typescript-type-fail — fixture is broken or TS2322 no longer triggers"
+            exit 1
+          fi
+          if ! echo "${tsc_output}" | grep -q 'TS2322'; then
+            echo "::error::Expected 'TS2322' in tsc output but got:"
+            echo "${tsc_output}"
+            exit 1
+          fi
+          echo "Verified: tsc failed with TS2322 as expected"
