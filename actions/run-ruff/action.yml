@@ -25,7 +25,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::ruff check"
-        uvx "ruff==${RUFF_VERSION}" check .
+        uvx "ruff@${RUFF_VERSION}" check .
         echo "::endgroup::"
 
     - name: Run ruff format --check
@@ -36,5 +36,5 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::ruff format --check"
-        uvx "ruff==${RUFF_VERSION}" format --check .
+        uvx "ruff@${RUFF_VERSION}" format --check .
         echo "::endgroup::"
