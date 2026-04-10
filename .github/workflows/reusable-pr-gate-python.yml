@@ -43,15 +43,7 @@ on:
         type: string
         default: "0.5.0"
       gh-manage-ref:
-        description: >
-          Ref of yakkuro/gh-manage to check out for Layer-2 composite actions.
-          MUST match the `@<ref>` you used in the `uses:` line of your workflow
-          (e.g., if you wrote `uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.2.1`,
-          set this to `"v0.2.1"`). GitHub Actions does NOT expose the called
-          reusable workflow's own ref to the workflow at runtime — `github.workflow_ref`
-          reflects the TOP-LEVEL caller's workflow, so the consumer must pass
-          this value explicitly. Same-repo dogfood and smoke-test pass
-          `${{ github.sha }}` to test in-PR action changes.
+        description: "Ref of yakkuro/gh-manage to check out for Layer-2 composite actions. MUST match the @<ref> you used in the uses: line. See docs/usage/python.md for the rationale."
         required: true
         type: string
 
