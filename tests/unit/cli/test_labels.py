@@ -8,7 +8,8 @@ from click.testing import CliRunner
 from pytest_mock import MockerFixture
 
 from gh_manage.cli import main
-from gh_manage.github_client import GhAuthError, GhNotFoundError, Label
+from gh_manage.github_api.labels import Label
+from gh_manage.github_client import GhAuthError, GhNotFoundError
 from gh_manage.labels_sync import (
     LabelCreate,
     LabelsDiff,
@@ -50,7 +51,7 @@ def _write_minimal_config(path: Path) -> None:
 def test_sync_dry_run_by_default_prints_plan(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_nonempty_diff(),
@@ -74,7 +75,7 @@ def test_sync_dry_run_by_default_prints_plan(
 def test_sync_with_apply_calls_apply_diff(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_nonempty_diff(),
@@ -105,7 +106,7 @@ def test_sync_with_apply_calls_apply_diff(
 def test_sync_with_apply_passes_prune_to_compute_diff(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mock_compute = mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -156,7 +157,7 @@ def test_sync_apply_and_dry_run_conflict_raises_usage_error(
 
 
 def test_sync_bare_repo_prepends_yakkuro(mocker: MockerFixture, tmp_path: Path) -> None:
-    mock_list = mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mock_list = mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -177,7 +178,7 @@ def test_sync_bare_repo_prepends_yakkuro(mocker: MockerFixture, tmp_path: Path) 
 def test_sync_owner_slash_repo_passes_through(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mock_list = mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mock_list = mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -204,7 +205,7 @@ def test_sync_owner_slash_repo_passes_through(
 def test_sync_empty_diff_prints_no_changes(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -227,7 +228,7 @@ def test_sync_gh_auth_error_displays_actionable_message(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
     mocker.patch(
-        "gh_manage.github_client.list_labels",
+        "gh_manage.github_api.labels.list_labels",
         side_effect=GhAuthError("Run `gh auth login` and try again."),
     )
 
@@ -264,7 +265,7 @@ def test_sync_config_not_found_returns_click_path_error() -> None:
 
 # diff command
 def test_diff_exit_zero_when_no_diff(mocker: MockerFixture, tmp_path: Path) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -284,7 +285,7 @@ def test_diff_exit_zero_when_no_diff(mocker: MockerFixture, tmp_path: Path) -> N
 
 
 def test_diff_exit_one_when_diff_present(mocker: MockerFixture, tmp_path: Path) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_nonempty_diff(),
@@ -306,7 +307,7 @@ def test_diff_exit_one_when_diff_present(mocker: MockerFixture, tmp_path: Path) 
 def test_diff_prune_flag_passed_to_compute_diff(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    mocker.patch("gh_manage.github_client.list_labels", return_value=[])
+    mocker.patch("gh_manage.github_api.labels.list_labels", return_value=[])
     mock_compute = mocker.patch(
         "gh_manage.commands.labels.labels_sync.compute_diff",
         return_value=_empty_diff(),
@@ -334,7 +335,7 @@ def test_diff_prune_flag_passed_to_compute_diff(
 # show command
 def test_show_lists_current_labels_sorted(mocker: MockerFixture) -> None:
     mocker.patch(
-        "gh_manage.github_client.list_labels",
+        "gh_manage.github_api.labels.list_labels",
         return_value=[
             Label(name="zebra", color="000000", description="z"),
             Label(name="alpha", color="ffffff", description="a"),
@@ -352,7 +353,7 @@ def test_show_lists_current_labels_sorted(mocker: MockerFixture) -> None:
 def test_show_does_not_load_config(mocker: MockerFixture) -> None:
     """show should succeed without any config/labels.yml present."""
     mocker.patch(
-        "gh_manage.github_client.list_labels",
+        "gh_manage.github_api.labels.list_labels",
         return_value=[Label(name="bug", color="d73a4a", description="x")],
     )
     mock_load = mocker.patch("gh_manage.commands.labels.load_config")
@@ -366,7 +367,7 @@ def test_show_gh_not_found_displays_actionable_message(
     mocker: MockerFixture,
 ) -> None:
     mocker.patch(
-        "gh_manage.github_client.list_labels",
+        "gh_manage.github_api.labels.list_labels",
         side_effect=GhNotFoundError(
             "GitHub API returned 404 for repos/foo/bar/labels. "
             "Check the resource name and your auth status with `gh auth status`."

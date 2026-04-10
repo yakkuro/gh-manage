@@ -10,8 +10,9 @@ from typing import Any, TypeVar
 
 import click
 
-from gh_manage import github_client, labels_sync
+from gh_manage import labels_sync
 from gh_manage.config import ConfigError, load_config
+from gh_manage.github_api import labels as labels_api
 from gh_manage.github_client import GhError
 from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
@@ -110,7 +111,7 @@ def sync(
 
     qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
-    current = github_client.list_labels(qualified)
+    current = labels_api.list_labels(qualified)
 
     diff = labels_sync.compute_diff(current, config, prune=prune)
 
@@ -154,7 +155,7 @@ def sync(
 def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
     qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
-    current = github_client.list_labels(qualified)
+    current = labels_api.list_labels(qualified)
 
     diff = labels_sync.compute_diff(current, config, prune=prune)
 
@@ -177,6 +178,6 @@ def show(repo: str) -> None:
     state. No --config flag, no config validation. The only failure modes
     are GhError subclasses from the list_labels call."""
     qualified = parse_repo(repo)
-    current = github_client.list_labels(qualified)
+    current = labels_api.list_labels(qualified)
     for label in sorted(current, key=lambda lb: lb.name):
         click.echo(f"{label.name}  color={label.color}  desc={label.description!r}")

@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from pytest_mock import MockerFixture
 
-from gh_manage.github_client import GhAPIError, Label
+from gh_manage.github_api.labels import Label
+from gh_manage.github_client import GhAPIError
 from gh_manage.labels_sync import (
     LabelCreate,
     LabelDelete,
@@ -256,14 +257,14 @@ def test_apply_diff_calls_renames_before_creates(mocker: MockerFixture) -> None:
     call_order: list[str] = []
 
     mocker.patch(
-        "gh_manage.github_client.update_label",
+        "gh_manage.github_api.labels.update_label",
         side_effect=lambda *a, **k: call_order.append("update"),
     )
     mocker.patch(
-        "gh_manage.github_client.create_label",
+        "gh_manage.github_api.labels.create_label",
         side_effect=lambda *a, **k: call_order.append("create"),
     )
-    mocker.patch("gh_manage.github_client.delete_label")
+    mocker.patch("gh_manage.github_api.labels.delete_label")
 
     diff = LabelsDiff(
         renames=(LabelRename(old_name="bug", new_label=Label("fix", "d73a4a", "x")),),
@@ -278,15 +279,15 @@ def test_apply_diff_calls_renames_before_creates(mocker: MockerFixture) -> None:
 def test_apply_diff_calls_deletes_last(mocker: MockerFixture) -> None:
     call_order: list[str] = []
     mocker.patch(
-        "gh_manage.github_client.create_label",
+        "gh_manage.github_api.labels.create_label",
         side_effect=lambda *a, **k: call_order.append("create"),
     )
     mocker.patch(
-        "gh_manage.github_client.update_label",
+        "gh_manage.github_api.labels.update_label",
         side_effect=lambda *a, **k: call_order.append("update"),
     )
     mocker.patch(
-        "gh_manage.github_client.delete_label",
+        "gh_manage.github_api.labels.delete_label",
         side_effect=lambda *a, **k: call_order.append("delete"),
     )
 
@@ -307,9 +308,9 @@ def test_apply_diff_fails_fast_on_first_error(mocker: MockerFixture) -> None:
     def fail_update(*args, **kwargs):
         raise GhAPIError("simulated failure")
 
-    mock_create = mocker.patch("gh_manage.github_client.create_label")
-    mocker.patch("gh_manage.github_client.update_label", side_effect=fail_update)
-    mocker.patch("gh_manage.github_client.delete_label")
+    mock_create = mocker.patch("gh_manage.github_api.labels.create_label")
+    mocker.patch("gh_manage.github_api.labels.update_label", side_effect=fail_update)
+    mocker.patch("gh_manage.github_api.labels.delete_label")
 
     diff = LabelsDiff(
         renames=(LabelRename(old_name="bug", new_label=Label("fix", "d73a4a", "x")),),
@@ -325,9 +326,9 @@ def test_apply_diff_fails_fast_on_first_error(mocker: MockerFixture) -> None:
 def test_apply_diff_progress_callback_invoked_in_order(
     mocker: MockerFixture,
 ) -> None:
-    mocker.patch("gh_manage.github_client.update_label")
-    mocker.patch("gh_manage.github_client.create_label")
-    mocker.patch("gh_manage.github_client.delete_label")
+    mocker.patch("gh_manage.github_api.labels.update_label")
+    mocker.patch("gh_manage.github_api.labels.create_label")
+    mocker.patch("gh_manage.github_api.labels.delete_label")
 
     progress_calls: list[str] = []
     diff = LabelsDiff(
