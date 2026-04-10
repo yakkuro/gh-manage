@@ -22,7 +22,7 @@ Directly from `docs/specs/2026-04-10-gh-manage-design.md` lines 837-843, with Ph
 
 - [ ] `.github/workflows/reusable-pr-gate-typescript.yml` exists with the documented input surface
 - [ ] `actions/setup-node-pnpm/action.yml`, `actions/run-eslint/action.yml`, `actions/run-tsc/action.yml` exist; shared `actions/log-gh-manage-version/` is unchanged
-- [ ] `tests/fixtures/projects/typescript-sample/` exists and passes `pnpm install --frozen-lockfile && pnpm exec eslint . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` locally and via smoke-test
+- [ ] `tests/fixtures/projects/typescript-sample/` exists and passes `pnpm install --frozen-lockfile && pnpm exec eslint . && pnpm --package="typescript@<pin>" dlx tsc --noEmit && pnpm test` locally and via smoke-test
 - [ ] `tests/fixtures/projects/typescript-lint-fail/` triggers a `no-unused-vars` eslint violation; smoke-test negative job is green (outcome + reason verified)
 - [ ] `tests/fixtures/projects/typescript-type-fail/` triggers a `TS2322` type error; smoke-test negative job is green (outcome + reason verified)
 - [ ] `docs/usage/typescript.md` exists, mirroring the structure of `docs/usage/python.md`
@@ -150,7 +150,8 @@ The main design spec (`docs/specs/2026-04-10-gh-manage-design.md` line 280) list
   ```
   set -euo pipefail
   echo "::group::tsc --noEmit"
-  pnpm dlx "typescript@${TYPESCRIPT_VERSION}" tsc --noEmit -p "${TSCONFIG}"
+  # pnpm 10+: use --package to disambiguate the multi-bin typescript package
+  pnpm --package="typescript@${TYPESCRIPT_VERSION}" dlx tsc --noEmit -p "${TSCONFIG}"
   echo "::endgroup::"
   ```
 - **Rationale for `-p` explicit**: allows consumers with multiple tsconfigs (e.g., `tsconfig.build.json`) to override via a follow-up input surface if needed. For v0.2.0 the reusable workflow does not expose it; the default is sufficient.
@@ -346,7 +347,7 @@ Phase 1 nearly shipped a broken composite action because negative fixtures initi
 Concrete Phase 2 assertions:
 
 - **`negative-typescript-lint-fail`**: direct run `pnpm exec eslint .` in the fixture dir; grep stdout for the literal string `no-unused-vars`.
-- **`negative-typescript-type-fail`**: direct run `pnpm dlx "typescript@<pin>" tsc --noEmit`; grep stdout for the literal string `TS2322`.
+- **`negative-typescript-type-fail`**: direct run `pnpm --package="typescript@<pin>" dlx tsc --noEmit`; grep stdout for the literal string `TS2322`.
 
 Both identifiers are stable: `no-unused-vars` is a core eslint rule present in `@eslint/js/recommended`; `TS2322` has been the TypeScript type-assignment-mismatch error code since the early versions of tsc. If either the outcome OR reason assertion fails, the smoke-test job fails with a clear `::error::` explaining which check failed and the captured output.
 
@@ -365,7 +366,7 @@ Both identifiers are stable: `no-unused-vars` is a core eslint rule present in `
 
 | Layer | What | Where | When |
 |---|---|---|---|
-| **L1** — fixture local verification | `pnpm install && pnpm exec eslint . && pnpm dlx typescript@<pin> tsc --noEmit && pnpm test` inside each fixture | developer workstation | manual during plan/implement phase |
+| **L1** — fixture local verification | `pnpm install && pnpm exec eslint . && pnpm --package="typescript@<pin>" dlx tsc --noEmit && pnpm test` inside each fixture | developer workstation | manual during plan/implement phase |
 | **L2** — smoke-test.yml | Reusable workflow + composite actions via GHA on a PR | CI | every PR touching Phase 2 files |
 
 No L3 (external consumer) test until Phase 3.
@@ -393,21 +394,21 @@ All 6 must be green before merge.
 cd tests/fixtures/projects/typescript-sample
 pnpm install --frozen-lockfile
 pnpm exec eslint .
-pnpm dlx "typescript@<pin>" tsc --noEmit
+pnpm --package="typescript@<pin>" dlx tsc --noEmit
 pnpm test
 
 # typescript-lint-fail (eslint expected to fail with no-unused-vars)
 cd tests/fixtures/projects/typescript-lint-fail
 pnpm install --frozen-lockfile
 pnpm exec eslint . ; echo "exit=$?"   # expect non-zero + 'no-unused-vars' in output
-pnpm dlx "typescript@<pin>" tsc --noEmit
+pnpm --package="typescript@<pin>" dlx tsc --noEmit
 pnpm test
 
 # typescript-type-fail (tsc expected to fail with TS2322)
 cd tests/fixtures/projects/typescript-type-fail
 pnpm install --frozen-lockfile
 pnpm exec eslint .
-pnpm dlx "typescript@<pin>" tsc --noEmit ; echo "exit=$?"   # expect non-zero + 'TS2322' in output
+pnpm --package="typescript@<pin>" dlx tsc --noEmit ; echo "exit=$?"   # expect non-zero + 'TS2322' in output
 pnpm test
 ```
 
@@ -415,7 +416,7 @@ pnpm test
 
 For each negative fixture, during local L1 verification the implementer MUST:
 
-1. **Exit-code check**: run the tool (`pnpm exec eslint .` or `pnpm dlx typescript@<pin> tsc --noEmit`) — confirm non-zero exit status.
+1. **Exit-code check**: run the tool (`pnpm exec eslint .` or `pnpm --package="typescript@<pin>" dlx tsc --noEmit`) — confirm non-zero exit status.
 2. **Reason check**: capture stderr+stdout and `grep` for the expected identifier (`no-unused-vars` or `TS2322`). Confirm the identifier appears in the captured output.
 3. **Isolation check**: the OTHER tool (eslint for type-fail, tsc for lint-fail) must exit 0. This proves the fixture's failure is isolated to the intended dimension and isn't leaking into the other check.
 4. **Vitest check**: `pnpm test` must exit 0. This proves the fixture's test suite is runnable independent of lint/type errors.

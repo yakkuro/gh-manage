@@ -170,7 +170,7 @@ Pin to a specific immutable tag for production repositories. Use `@main` only fo
 
 **"I need a newer TypeScript than gh-manage pins"** — open an issue on `yakkuro/gh-manage` asking for a pin bump. Do not fork.
 
-**"My tests need Node 18 or earlier"** — v0.2.0 requires Node 20+ because the fixture test runner (vitest 4.x) has that engine constraint. If your test runner is different and supports older Node, you can override `test-command`, but gh-manage still installs the Node version you request via `node-version`. If Node 18 works for your project, pass `node-version: "18"` and accept that the fixture smoke tests we run are not representative of your environment.
+**"My tests need Node 18 or earlier"** — v0.2.0 is supported on **Node 20 or higher only**. This is driven by vitest 4.x's engine constraint (`^20 || ^22 || >=24`), which is what the fixture test runner uses and what drives the smoke-test matrix. Passing `node-version: "18"` is NOT a supported configuration: `actions/setup-node@v4` will install Node 18, but `pnpm install --frozen-lockfile` for most modern TS projects will fail because of transitive engine constraints. If you need Node 18 support, open an issue on `yakkuro/gh-manage`; the minimum may be lowered in a future release once a Node-18-compatible test runner is adopted.
 
 ## See also
 

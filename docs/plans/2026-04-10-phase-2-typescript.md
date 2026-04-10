@@ -1,12 +1,14 @@
 # Phase 2 — TypeScript Reusable PR Gate Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Plan executed**: 2026-04-10. The version pin assumptions in this plan (initially drafted as eslint 9.x / TypeScript 5.x / vitest 2.x/3.x / plain `pnpm dlx`) were superseded at execution time by the actual 2026-04-10 stable releases. See `CHANGELOG-reusable.md` and `docs/specs/2026-04-10-phase-2-typescript-design.md` for the authoritative shipped values (pnpm 10.33.0, TypeScript 6.0.2, eslint 10.2.0, vitest 4.1.4). The shipped `run-tsc` composite uses `pnpm --package="typescript@<pin>" dlx tsc` (not `pnpm dlx typescript@<pin> tsc`) because pnpm 10 requires `--package` to disambiguate the multi-bin `typescript` package (`tsc` vs `tsserver`). References to the earlier forms in the task bodies below are historical artifacts of the plan-writing phase and should be read as "placeholders the subagent substituted with the resolved values from Task 0.2".
 
 **Goal:** Ship `yakkuro/gh-manage@v0.2.0` adding a TypeScript counterpart to Phase 1's Python PR gate — a reusable workflow + 3 composite actions + 3 fixture projects + 3 smoke-test jobs + consumer docs — proving the 3-layer architecture supports multiple runtimes without cross-contamination.
 
-**Architecture:** 3-layer mirror of Phase 1. Layer 3 is a `reusable-pr-gate-typescript.yml` workflow with self-checkout pattern for cross-repo resolution. Layer 2 adds `setup-node-pnpm`, `run-eslint`, `run-tsc` composite actions; `log-gh-manage-version` is shared with Phase 1. Tool pinning is hybrid: `tsc` is pinned inside the composite action via `pnpm dlx "typescript@<pin>"` (mirror of Phase 1's `uvx "ruff@<pin>"`), but `eslint` is invoked via `pnpm exec eslint .` because eslint 9.x flat config requires peer dependencies (typescript-eslint, @eslint/js) that are awkward to stuff through `pnpm dlx`. Fixtures include eslint + typescript-eslint + @eslint/js in devDependencies, giving gh-manage recommendation authority without strict enforcement for eslint.
+**Architecture:** 3-layer mirror of Phase 1. Layer 3 is a `reusable-pr-gate-typescript.yml` workflow with self-checkout pattern for cross-repo resolution. Layer 2 adds `setup-node-pnpm`, `run-eslint`, `run-tsc` composite actions; `log-gh-manage-version` is shared with Phase 1. Tool pinning is hybrid: `tsc` is pinned inside the composite action via `pnpm --package="typescript@<pin>" dlx tsc` (the pnpm 10 analogue of Phase 1's `uvx "ruff@<pin>"`), but `eslint` is invoked via `pnpm exec eslint .` because eslint 10.x flat config requires peer dependencies (typescript-eslint, @eslint/js) that are awkward to stuff through `pnpm dlx`. Fixtures include eslint + typescript-eslint + @eslint/js in devDependencies, giving gh-manage recommendation authority without strict enforcement for eslint.
 
-**Tech Stack:** Node.js 20 (fixture-verified), pnpm (pinned), eslint 9.x flat config + typescript-eslint, TypeScript 5.x (pinned inside run-tsc composite), vitest for fixture test runner.
+**Tech Stack:** Node.js 20+ required (fixture-verified on Node 22; driven by vitest 4.x engine constraint `^20 || ^22 || >=24`), pnpm 10.33.0 (pinned), eslint 10.x flat config + typescript-eslint 8.x, TypeScript 6.0.2 (pinned inside run-tsc composite via `pnpm --package`), vitest 4.x for fixture test runner.
 
 **Spec reference:** [`docs/specs/2026-04-10-phase-2-typescript-design.md`](../specs/2026-04-10-phase-2-typescript-design.md). Read it first. All Acceptance Criteria in this plan reference tick-boxes from that spec.
 
@@ -174,12 +176,13 @@ echo "tasks/phase-2-pins.md" >> .git/info/exclude
 
 - [ ] **Step 3: Verify pins look reasonable**
 
-Sanity checks:
-- pnpm major version: expect 9.x or 10.x (as of 2026-04-10)
-- eslint major version: expect 9.x (flat config mandatory since 9.0)
-- typescript major version: expect 5.x
-- typescript-eslint major version: expect 8.x or 9.x (8.x if eslint 9.x; 9.x if eslint 9.x+ compatible)
-- vitest major version: expect 2.x or 3.x
+Sanity checks (as actually resolved on 2026-04-10 during execution):
+- pnpm: expect 10.x (shipped: 10.33.0)
+- eslint: expect 10.x (flat config mandatory since 9.0; shipped: 10.2.0)
+- typescript: expect 5.x or 6.x (shipped: 6.0.2)
+- typescript-eslint: expect 8.x (shipped: 8.58.1; verify peer-dep compatibility against the chosen eslint + typescript — as of 2026-04-10, `typescript-eslint@8.58.1` accepts `eslint ^8.57.0 || ^9.0.0 || ^10.0.0` and `typescript >=4.8.4 <6.1.0`)
+- vitest: expect 4.x (shipped: 4.1.4) — note: its engine constraint `^20 || ^22 || >=24` drives the Node 20+ minimum
+- @types/node: tracks the Node LTS line you're using (shipped: 22.19.17 for Node 22 LTS)
 
 If any version looks wrong (e.g., pnpm 4.x returned — probably a registry or network problem), STOP and investigate before proceeding.
 
