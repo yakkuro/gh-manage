@@ -34,10 +34,6 @@ STUB_ERROR_MESSAGES: dict[str, str] = {
         "error: `gh manage apply` is not yet implemented — "
         "scheduled for cli/v0.3.0 (Phase 6)."
     ),
-    "labels": (
-        "error: `gh manage labels` is not yet implemented — "
-        "scheduled for cli/v0.2.0 (Phase 5)."
-    ),
     "protection": (
         "error: `gh manage protection` is not yet implemented — "
         "scheduled for cli/v0.4.0 (Phase 7)."
@@ -79,7 +75,7 @@ def test_short_help_flag_shows_exact_prog_name() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "apply", "labels", "protection", "drift", "issues"],
+    ["init", "apply", "protection", "drift", "issues"],
 )
 def test_stub_subcommand_exits_with_exact_phase_message(subcommand: str) -> None:
     """Each stub must print the EXACT error message from STUB_ERROR_MESSAGES.
@@ -105,7 +101,7 @@ def test_unknown_subcommand_exits_with_click_usage_error() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "apply", "labels", "protection", "drift", "issues"],
+    ["init", "apply", "protection", "drift", "issues"],
 )
 def test_stub_subcommand_help_shows_help_without_firing_stub(subcommand: str) -> None:
     """`gh manage <stub> --help` must display the subcommand's help text

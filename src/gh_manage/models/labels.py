@@ -11,6 +11,7 @@ class LabelSpec(BaseModel):
     name: str = Field(min_length=1)
     color: str = Field(pattern=r"^[0-9a-fA-F]{6}$")
     description: str | None = None
+    old_name: str | None = None
 
 
 class CategorySpec(BaseModel):

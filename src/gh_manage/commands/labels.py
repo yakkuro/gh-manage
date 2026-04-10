@@ -1,22 +1,192 @@
-"""`gh manage labels` — label synchronization.
-
-Scheduled for cli/v0.2.0 (Phase 5).
-"""
+"""gh manage labels — sync, diff, show GitHub repo labels."""
 
 from __future__ import annotations
 
+import functools
 import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, TypeVar
 
 import click
 
+from gh_manage import github_client, labels_sync
+from gh_manage.config import ConfigError, load_config
+from gh_manage.github_client import GhError
+from gh_manage.labels_sync import LabelsDiff
+from gh_manage.models.labels import LabelsConfig
 
-@click.command(
-    help="Synchronize GitHub repo labels against config/labels.yml (not yet implemented)."
-)
+DEFAULT_OWNER = "yakkuro"
+DEFAULT_CONFIG_PATH = Path("config/labels.yml")
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _parse_repo(repo: str) -> str:
+    """Normalize bare name to owner/repo (Q6 C).
+
+    Called by ALL THREE subcommands (sync, diff, show) on their `<repo>`
+    argument to keep repo normalization consistent.
+    """
+    if "/" in repo:
+        return repo
+    return f"{DEFAULT_OWNER}/{repo}"
+
+
+def _format_diff(diff: LabelsDiff) -> str:
+    """Render LabelsDiff as plain text (Q7 A)."""
+    lines: list[str] = []
+    for rename in diff.renames:
+        lines.append(f"~ {rename.old_name} → {rename.new_label.name}")
+        lines.append(
+            f"    color={rename.new_label.color}  desc={rename.new_label.description!r}"
+        )
+    for create in diff.creates:
+        lines.append(
+            f"+ {create.label.name}  color={create.label.color}  "
+            f"desc={create.label.description!r}"
+        )
+    for update in diff.updates:
+        lines.append(
+            f"≈ {update.label.name}  color={update.label.color}  "
+            f"desc={update.label.description!r}"
+        )
+    for delete in diff.deletes:
+        lines.append(f"- {delete.name}")
+    return "\n".join(lines)
+
+
+def _handle_errors(func: _F) -> _F:
+    """Decorator: catch GhError/ConfigError and re-raise as click.ClickException.
+
+    click.ClickException prints `Error: <msg>` to stderr and exits 1.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except (GhError, ConfigError) as e:
+            raise click.ClickException(str(e)) from e
+
+    return wrapper  # type: ignore[return-value]
+
+
+@click.group(help="Synchronize GitHub repo labels against config/labels.yml.")
 def labels() -> None:
-    click.echo(
-        "error: `gh manage labels` is not yet implemented — "
-        "scheduled for cli/v0.2.0 (Phase 5).",
-        err=True,
-    )
+    """Entry group for labels subcommands."""
+
+
+@labels.command(
+    help=(
+        "Apply config/labels.yml to a repo. Default is dry-run; "
+        "pass --apply to execute."
+    ),
+)
+@click.argument("repo")
+@click.option(
+    "--apply",
+    "apply_flag",
+    is_flag=True,
+    help="Actually execute changes (default is dry-run).",
+)
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Delete labels not in config (requires --apply).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Explicit dry-run; conflicts with --apply.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_CONFIG_PATH,
+    help="Path to labels.yml.",
+)
+@_handle_errors
+def sync(
+    repo: str,
+    apply_flag: bool,
+    prune: bool,
+    dry_run: bool,
+    config_path: Path,
+) -> None:
+    if apply_flag and dry_run:
+        raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+    qualified = _parse_repo(repo)
+    config = load_config(config_path, LabelsConfig)
+    current = github_client.list_labels(qualified)
+
+    diff = labels_sync.compute_diff(current, config, prune=prune)
+
+    if diff.is_empty:
+        click.echo("No changes.")
+        return
+
+    click.echo(_format_diff(diff))
+
+    if not apply_flag:
+        click.echo(
+            f"\nDry-run: {diff.total_changes} changes. Re-run with --apply to execute."
+        )
+        return
+
+    click.echo("")
+    labels_sync.apply_diff(diff, qualified, progress=click.echo)
+    click.echo(f"\nApplied {diff.total_changes} changes.")
+
+
+@labels.command(
+    "diff",
+    help=(
+        "Show diff between config/labels.yml and a repo. "
+        "Exit 0 if no diff, 1 if diff present (git diff --quiet style)."
+    ),
+)
+@click.argument("repo")
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Include would-be deletes in the diff.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_CONFIG_PATH,
+)
+@_handle_errors
+def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
+    qualified = _parse_repo(repo)
+    config = load_config(config_path, LabelsConfig)
+    current = github_client.list_labels(qualified)
+
+    diff = labels_sync.compute_diff(current, config, prune=prune)
+
+    if diff.is_empty:
+        click.echo("No diff.")
+        sys.exit(0)
+
+    click.echo(_format_diff(diff))
     sys.exit(1)
+
+
+@labels.command(
+    "show",
+    help="List current labels on a repo (read-only).",
+)
+@click.argument("repo")
+@_handle_errors
+def show(repo: str) -> None:
+    """Show does NOT load config/labels.yml — it lists the repo's current
+    state. No --config flag, no config validation. The only failure modes
+    are GhError subclasses from the list_labels call."""
+    qualified = _parse_repo(repo)
+    current = github_client.list_labels(qualified)
+    for label in sorted(current, key=lambda lb: lb.name):
+        click.echo(f"{label.name}  color={label.color}  desc={label.description!r}")

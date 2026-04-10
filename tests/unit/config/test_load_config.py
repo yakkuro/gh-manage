@@ -122,3 +122,20 @@ def test_os_error_preserves_cause(
     with pytest.raises(ConfigFileNotFoundError) as excinfo:
         load_config(path, LabelsConfig)
     assert isinstance(excinfo.value.__cause__, PermissionError)
+
+
+def test_load_labels_config_with_old_name_field() -> None:
+    """Regression test for Phase 5: LabelsConfig accepts the new optional
+    old_name field on LabelSpec. Existing Phase 4 fixtures (which don't
+    set old_name) continue to validate because old_name defaults to None."""
+    config = load_config(FIXTURES / "labels-valid-with-rename.yml", LabelsConfig)
+    assert isinstance(config, LabelsConfig)
+    assert config.version == 1
+    type_labels = config.categories["type"].labels
+    assert len(type_labels) == 2
+    # Label with old_name
+    assert type_labels[0].name == "fix"
+    assert type_labels[0].old_name == "bug"
+    # Label without old_name — defaults to None
+    assert type_labels[1].name == "feat"
+    assert type_labels[1].old_name is None

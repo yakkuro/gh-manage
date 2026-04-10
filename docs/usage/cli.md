@@ -70,12 +70,112 @@ Target versions are planned, not binding — if phase scope shifts, these number
 
 | Subcommand | Planned version | Phase | What it will do |
 |---|---|---|---|
-| `labels` | cli/v0.2.0 | Phase 5 | Synchronize GitHub repo labels against `config/labels.yml` |
+| `labels` | **cli/v0.2.0** ✅ | Phase 5 | Synchronize GitHub repo labels against `config/labels.yml` (sync/diff/show subcommands) |
 | `init` | cli/v0.3.0 | Phase 6 | Initialize a new repo with a gh-manage profile |
 | `apply` | cli/v0.3.0 | Phase 6 | Apply a gh-manage profile to an existing repo |
 | `protection` | cli/v0.4.0 | Phase 7 | Synchronize branch protection rules |
 | `drift` | cli/v0.5.0 | Phase 8 | Scan repos for configuration drift |
 | `issues` | cli/v0.5.0 | Phase 8 | Cross-repo issue listing |
+
+## labels
+
+Shipped in `cli/v0.2.0`. Synchronizes GitHub repository labels against `config/labels.yml` (the source of truth).
+
+### Commands
+
+- **`gh manage labels sync <repo>`** — Compute and optionally apply label changes.
+  - Default: dry-run (shows the plan, exits 0)
+  - `--apply` — execute the plan
+  - `--prune` — include deletes in the plan (labels not in config get deleted; requires `--apply` to take effect)
+  - `--dry-run` — explicit dry-run (conflicts with `--apply`)
+  - `--config PATH` — path to labels.yml (default: `config/labels.yml`)
+
+- **`gh manage labels diff <repo>`** — Show diff without applying.
+  - Exits 0 if no diff, 1 if diff present (`git diff --quiet` style)
+  - `--prune` — include would-be deletes in diff
+  - `--config PATH` — same as sync
+
+- **`gh manage labels show <repo>`** — List current labels on the repo (read-only). No config loaded.
+
+### Repo argument format
+
+Both bare name and `owner/repo` are accepted:
+
+```bash
+gh manage labels sync gh-manage               # expands to yakkuro/gh-manage
+gh manage labels sync yakkuro/gh-manage       # explicit
+gh manage labels sync other-org/other-repo    # non-yakkuro org
+```
+
+### Walkthrough: gh-manage self-dogfood
+
+```bash
+# 1. Dry-run: see the planned changes
+$ gh manage labels diff gh-manage
+~ bug → fix
+    color=d73a4a  desc='Bug fix (fix:)'
+~ documentation → docs
+    color=0075ca  desc='Documentation changes (docs:)'
+~ enhancement → feat
+    color=a2eeef  desc='New feature (feat:)'
++ chore  color=e1e7eb  desc='Maintenance / housekeeping (chore:)'
++ refactor  color=ffd866  desc='Refactor without behavior change (refactor:)'
++ test  color=c5def5  desc='Test additions / changes (test:)'
++ ci  color=b4a5ff  desc='CI/CD changes (ci:)'
++ perf  color=5319e7  desc='Performance improvements (perf:)'
+# Exit code: 1 (diff present)
+
+# 2. Apply the changes
+$ gh manage labels sync gh-manage --apply
+# Same diff output, followed by progress lines and "Applied 8 changes."
+
+# 3. Verify idempotency
+$ gh manage labels diff gh-manage
+No diff.
+# Exit code: 0
+
+# 4. Show the final state
+$ gh manage labels show gh-manage
+chore  color=e1e7eb  desc='Maintenance / housekeeping (chore:)'
+ci  color=b4a5ff  desc='CI/CD changes (ci:)'
+docs  color=0075ca  desc='Documentation changes (docs:)'
+duplicate  color=cfd3d7  desc='This issue or PR already exists'
+feat  color=a2eeef  desc='New feature (feat:)'
+fix  color=d73a4a  desc='Bug fix (fix:)'
+good first issue  color=7057ff  desc='Good for newcomers'
+help wanted  color=008672  desc='Extra attention is needed'
+invalid  color=e4e669  desc='Not actionable'
+perf  color=5319e7  desc='Performance improvements (perf:)'
+question  color=d876e3  desc='Further information is requested'
+refactor  color=ffd866  desc='Refactor without behavior change (refactor:)'
+test  color=c5def5  desc='Test additions / changes (test:)'
+wontfix  color=ffffff  desc='This will not be worked on'
+```
+
+### Error messages
+
+All error messages include actionable remediation. Examples:
+
+**Unauthenticated:**
+```
+$ gh manage labels sync gh-manage
+Error: The `gh` CLI is not authenticated or the token is invalid. Run `gh auth login` (or `gh auth refresh`) and try again.
+# Exit code: 1
+```
+
+**Nonexistent repo:**
+```
+$ gh manage labels sync yakkuro/does-not-exist
+Error: GitHub API returned 404 for repos/yakkuro/does-not-exist/labels. Check the resource name and your auth status with `gh auth status`.
+# Exit code: 1
+```
+
+**Insufficient scope:**
+```
+$ gh manage labels sync yakkuro/gh-manage --apply
+Error: Permission denied on repos/yakkuro/gh-manage/labels. Your `gh` token may lack the required scope. Run `gh auth refresh -s repo` to add `repo` scope.
+# Exit code: 1
+```
 
 ## Uninstalling
 
