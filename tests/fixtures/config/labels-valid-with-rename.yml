@@ -1,0 +1,12 @@
+version: 1
+categories:
+  type:
+    description: "Test category with rename support"
+    labels:
+      - name: "fix"
+        old_name: "bug"
+        color: "d73a4a"
+        description: "Bug fix"
+      - name: "feat"
+        color: "a2eeef"
+        description: "New feature"
