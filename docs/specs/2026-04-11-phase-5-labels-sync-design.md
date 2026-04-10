@@ -30,11 +30,11 @@ Direct mapping from `docs/specs/2026-04-10-gh-manage-design.md` § Phase 5 (line
 - [ ] `gh manage labels sync <repo> --apply --dry-run` exits 2 with click usage error (mutually exclusive)
 - [ ] `gh manage labels sync <nonexistent-repo>` exits 1 with `GhNotFoundError` message mentioning `gh auth status`
 - [ ] `gh manage labels sync <repo>` with unauthenticated `gh` exits 1 with `GhAuthError` mentioning `gh auth login`
-- [ ] `uv run pytest tests/unit/github_client` passes — ~16 tests covering run_gh_api, CRUD helpers, and the 6-subclass `GhError` hierarchy
-- [ ] `uv run pytest tests/unit/labels_sync` passes — ~19 tests covering compute_diff algorithm (rename detection, color normalization, prune logic) and apply_diff execution order
-- [ ] `uv run pytest tests/unit/cli/test_labels.py` passes — ~18 tests covering click argument parsing, exit codes, error display
-- [ ] `uv run pytest` in total passes — 84 tests (31 from Phase 4 + 53 new)
-- [ ] Line coverage ≥ 90% on new modules (`github_client.py`, `labels_sync.py`, `commands/labels.py`)
+- [ ] `uv run pytest tests/unit/github_client` passes — all new github_client tests (run_gh_api, CRUD helpers, 6-subclass `GhError` hierarchy)
+- [ ] `uv run pytest tests/unit/labels_sync` passes — all new labels_sync tests (compute_diff algorithm including rename/color/prune, apply_diff execution order)
+- [ ] `uv run pytest tests/unit/cli/test_labels.py` passes — all new CLI tests (click parsing, exit codes, error display, repo normalization across all 3 subcommands)
+- [ ] `uv run pytest` in total passes — the full test suite including all Phase 0-4 tests plus the new Phase 5 tests
+- [ ] Line coverage ≥ 90% on new modules (`github_client.py`, `labels_sync.py`, `commands/labels.py`) — this is the proxy for "enough tests"; exact counts are an estimate in § Testing Strategy but not locked in AC
 - [ ] `CHANGELOG-cli.md` has a `[0.2.0] - 2026-04-11` entry
 - [ ] `docs/usage/cli.md` updated with a `labels` subcommand section and the self-dogfood walkthrough
 - [ ] Annotated tag `cli/v0.2.0` exists on `main` after merge
@@ -400,10 +400,19 @@ def compute_diff(
     Returns LabelsDiff with operations grouped by type. Empty tuples for
     any empty bucket.
 
-    Normalization:
-      - Color: lowercase for both sides before comparison.
-      - Description: None or "" treated as equivalent (GitHub returns "" for
-        null descriptions after github_client normalization).
+    Normalization rules (applied inside compute_diff BEFORE any equality check):
+      - Color: `LabelSpec.color.lower()` vs `Label.color` (already lowercased
+        by github_client.list_labels). `LabelSpec` pydantic regex accepts
+        either case, so compute_diff must call `.lower()` on the desired side
+        explicitly. Rationale: this avoids spurious updates when a user writes
+        `color: "D73A4A"` in config.
+      - Description: `(LabelSpec.description or "")` vs `Label.description`
+        (already "" if GitHub returned null). Both sides normalized to str.
+        Rationale: `LabelSpec.description` is `str | None` per pydantic schema
+        (None when omitted from yml), while github_client.Label.description is
+        always str. Without this normalization, a yml label without a
+        description would diff spuriously against a GitHub label with an empty
+        description.
     """
     ...
 
@@ -488,7 +497,12 @@ DEFAULT_CONFIG_PATH = Path("config/labels.yml")
 
 
 def _parse_repo(repo: str) -> str:
-    """Normalize bare name to owner/repo (Q6 C)."""
+    """Normalize bare name to owner/repo (Q6 C).
+
+    Called by ALL THREE subcommands (sync, diff, show) on their `<repo>`
+    argument. Keeps repo normalization consistent so users don't see
+    inconsistent behavior across the labels command group.
+    """
     if "/" in repo:
         return repo
     return f"{DEFAULT_OWNER}/{repo}"
@@ -584,6 +598,10 @@ def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
 @click.argument("repo")
 @_handle_errors
 def show(repo: str) -> None:
+    """Show does NOT load config/labels.yml — it lists the repo's current
+    state. No `--config` flag. No config validation. The only failure modes
+    are GhError subclasses from the list_labels call. Exit codes: 0 on
+    success, 1 on GhError (via _handle_errors), 2 on usage error."""
     qualified = _parse_repo(repo)
     current = github_client.list_labels(qualified)
     for label in sorted(current, key=lambda lb: lb.name):
@@ -1146,3 +1164,12 @@ A non-exhaustive list of things NOT to do in Phase 5, to keep the PR focused:
 - Do NOT add `protection` or `drift` or `init` / `apply` subcommand implementations — those are Phase 6/7/8
 - Do NOT touch `pyproject.toml` beyond the version bump — no new dependencies
 - Do NOT add `# type: ignore` comments without a justifying explanation
+
+## Appendix: spec-critique findings rejected with rationale
+
+The spec went through `spec-critique` which returned 9 findings. Of those, 5 were accepted and applied inline; 4 were rejected after analysis. Recording them here so future reviewers don't re-raise the same points.
+
+- **"AC8's error message should say `gh auth login` not `gh auth status`"** (HIGH, rejected — misread). AC7 is about a 404 (nonexistent repo) where the user should check their auth coverage via `gh auth status`. AC8 is about an actual auth failure where the user should run `gh auth login` to refresh the session. The spec correctly differentiates. Both commands are the correct remediation for their respective error modes.
+- **"Add `gh` CLI version check (`gh --version` > 2.0)"** (MEDIUM, rejected — YAGNI). `gh api` has existed since early gh CLI versions and the label endpoints are stable. Pattern-matching stderr already catches version-related failures as `GhAPIError`. If a real user hits a version-specific failure, adding a version check is a targeted follow-up, not a speculative Phase 5 defense.
+- **"Provide a specific pytest fixture pattern for capturing progress callback output"** (LOW, rejected — plan-phase concern). The testing strategy section establishes that progress callbacks are tested in `test_labels_sync.py`. The exact `progress_calls = []; progress=progress_calls.append` pattern belongs in the writing-plans phase where individual test code is written out. Spec-level mention is sufficient.
+- **"Move the manual self-dogfood walkthrough to CI or make it a CI-gated job"** (LOW, rejected — intentional design). Phase 5 explicitly does NOT ship CI integration against live GitHub — that is deferred to Phase 8's drift scanner which needs a `yakkuro/gh-manage-test-fixture` repository. The 5-step walkthrough during PR is human-verified and captured in the PR description. Phase 8 will revisit this with automated integration testing.
