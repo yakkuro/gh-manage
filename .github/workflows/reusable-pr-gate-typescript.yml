@@ -64,12 +64,18 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          # github.workflow_ref is like:
-          # "yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@refs/heads/feat/foo"
-          # or "...@v0.1.0" when pinned to an immutable tag.
-          ref="${WORKFLOW_REF##*@}"
+          # github.workflow_ref is "<owner>/<repo>/<path-to-workflow>@<ref>".
+          # The workflow path always ends with `.yml`, so strip the shortest
+          # prefix up to and including `.yml@` — this correctly handles refs
+          # that themselves contain `@` (e.g., `release@candidate`). A naive
+          # `${VAR##*@}` (longest prefix) would truncate such refs.
+          if [[ "${WORKFLOW_REF}" != *.yml@* ]]; then
+            echo "::error::Unexpected github.workflow_ref format (missing .yml@): ${WORKFLOW_REF}"
+            exit 1
+          fi
+          ref="${WORKFLOW_REF#*.yml@}"
           if [[ -z "${ref}" ]]; then
-            echo "::error::Could not parse gh-manage ref from github.workflow_ref='${WORKFLOW_REF}'"
+            echo "::error::Empty ref parsed from github.workflow_ref='${WORKFLOW_REF}'"
             exit 1
           fi
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
