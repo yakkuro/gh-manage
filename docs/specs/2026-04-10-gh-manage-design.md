@@ -18,7 +18,7 @@
 - CI ワークフローがあるリポでも設定がバラバラで、PR レビュー品質が再現不可能
 - ラベル体系・Issue テンプレ・ブランチ保護ルールが各リポ任意で、規約のドリフトが蓄積している
 - `claude-dotfiles` リポジトリ内に CI スクリプト、reusable workflow、レビュー関連ルールが混在しており、Claude ハーネスとしての責務が曖昧
-- 既存の `reusable-pr-gate.yml` (claude-dotfiles) は未利用のまま 1 年以上経過し、`SHELF_BRAIN_DB_PASSWORD` のプロジェクト固有環境変数の漏れ、`lock-validation` ジョブの常時実行、ランタイム分岐のハードコードなど、設計品質が低い
+- 既存の `reusable-pr-gate.yml` (claude-dotfiles) は未利用のまま 1 年以上経過し、プロジェクト固有環境変数の漏れ込み、`lock-validation` ジョブの常時実行、ランタイム分岐のハードコードなど、設計品質が低い
 - 新規リポジトリを立ち上げるたびに同じセットアップを手作業で繰り返している
 
 ### 着想と判断

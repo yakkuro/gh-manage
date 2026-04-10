@@ -65,7 +65,7 @@
   test -f docs/specs/2026-04-10-gh-manage-design.md && echo "spec: ok" || echo "spec: MISSING"
   ```
   Expected:
-  - `pwd` prints `/home/server160/repos/gh-manage`
+  - `pwd` prints the gh-manage clone path (e.g., `~/repos/gh-manage`)
   - `docs/` directory exists (contains `plans/` and `specs/`)
   - No `.git/` directory yet
   - spec: ok
@@ -100,7 +100,7 @@
   cd ~/repos/gh-manage
   git init -b main
   ```
-  Expected output: `Initialized empty Git repository in /home/server160/repos/gh-manage/.git/`
+  Expected output: `Initialized empty Git repository in <repo>/gh-manage/.git/`
 
 - [ ] **Step 1.2: Create `.gitignore`**
 
