@@ -179,3 +179,75 @@ jobs:
     with:
       node-version: "20"
       working-directory: tests/fixtures/projects/typescript-sample
+
+  # ---------- Negative TypeScript fixture: lint failure ----------
+  # Same reasoning as the Python negative jobs: GitHub Actions does NOT
+  # support continue-on-error at job level for `jobs.<id>.uses:`. Use a
+  # regular job with composite invocations + step-level continue-on-error,
+  # then verify outcome AND reason.
+  negative-typescript-lint-fail:
+    name: smoke / typescript-lint-fail (expect eslint failure)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node and pnpm
+        uses: ./actions/setup-node-pnpm
+        with:
+          node-version: "20"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-lint-fail
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Run eslint composite (expect failure)
+        id: eslint
+        continue-on-error: true
+        uses: ./actions/run-eslint
+        with:
+          working-directory: tests/fixtures/projects/typescript-lint-fail
+
+      - name: Assert eslint composite outcome is failure
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.eslint.outcome }}
+        run: |
+          set -euo pipefail
+          echo "eslint composite outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::run-eslint composite was expected to fail on typescript-lint-fail but got outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "run-eslint composite failed as expected"
+
+      # Verify the failure REASON, not just the outcome. Without this check,
+      # a broken composite action (e.g., typo, missing dep) would also
+      # produce outcome=failure and silently pass this smoke test.
+      - name: Verify failure reason is no-unused-vars (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-lint-fail
+        run: |
+          set -euo pipefail
+          set +e
+          eslint_output=$(pnpm exec eslint . 2>&1)
+          eslint_exit=$?
+          set -e
+          echo "eslint direct output:"
+          echo "${eslint_output}"
+          echo "eslint direct exit code: ${eslint_exit}"
+          if [[ ${eslint_exit} -eq 0 ]]; then
+            echo "::error::eslint exited 0 on typescript-lint-fail — fixture is broken or rule no longer triggers"
+            exit 1
+          fi
+          if ! echo "${eslint_output}" | grep -q 'no-unused-vars'; then
+            echo "::error::Expected 'no-unused-vars' in eslint output but got:"
+            echo "${eslint_output}"
+            exit 1
+          fi
+          echo "Verified: eslint failed with no-unused-vars as expected"
