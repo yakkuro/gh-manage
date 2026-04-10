@@ -150,7 +150,15 @@ def run_gh_api(
     stdout = run_gh(args)
     if not stdout.strip():
         return None
-    return json.loads(stdout)
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise GhAPIError(
+            f"GitHub API returned invalid JSON for {endpoint}: {e}. "
+            f"This may indicate a network issue, truncated response, or API "
+            f"format change. Re-run with `GH_DEBUG=api` to inspect the raw "
+            f"response."
+        ) from e
 
 
 def list_labels(repo: str) -> list[Label]:

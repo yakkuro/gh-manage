@@ -11,6 +11,7 @@ from pytest_mock import MockerFixture
 from gh_manage.github_client import (
     GhAPIError,
     GhAuthError,
+    GhError,
     GhNotFoundError,
     GhNotInstalledError,
     GhPermissionError,
@@ -19,6 +20,7 @@ from gh_manage.github_client import (
     create_label,
     delete_label,
     list_labels,
+    run_gh,
     run_gh_api,
     update_label,
 )
@@ -196,3 +198,30 @@ def test_gh_auth_error_mentions_gh_auth_login(mocker: MockerFixture) -> None:
     _mock_gh_failure(mocker, "You are not logged in.\n")
     with pytest.raises(GhAuthError, match="gh auth login"):
         run_gh_api("repos/foo/bar/labels")
+
+
+# Regression: silent-failure-hunter review findings
+def test_run_gh_api_malformed_json_raises_gh_api_error(
+    mocker: MockerFixture,
+) -> None:
+    """Regression test for silent-failure-hunter MEDIUM finding:
+    json.loads on malformed stdout must be wrapped into GhAPIError so the
+    user sees an actionable message instead of a raw JSONDecodeError
+    traceback. This can happen in practice with truncated responses or
+    GitHub API format changes."""
+    _mock_gh_success(mocker, "{this is not valid json")
+    with pytest.raises(GhAPIError, match="invalid JSON"):
+        run_gh_api("repos/foo/bar/labels")
+
+
+def test_run_gh_non_zero_exit_propagates_classified_error(
+    mocker: MockerFixture,
+) -> None:
+    """Regression test for silent-failure-hunter HIGH finding:
+    run_gh (the lower-level function) must always raise a GhError subclass
+    on non-zero exit — never return silently. Tests exercise run_gh_api
+    which wraps run_gh; this test directly verifies run_gh itself so a
+    future refactor can't silently regress the non-zero path."""
+    _mock_gh_failure(mocker, "HTTP 404: Not Found\n")
+    with pytest.raises(GhError):
+        run_gh(["api", "repos/foo/bar/labels"])
