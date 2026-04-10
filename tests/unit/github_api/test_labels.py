@@ -127,7 +127,10 @@ def test_list_labels_converts_null_description_to_empty_string(
     assert result[0].description == ""
 
 
-# Happy path — create_label
+# Happy path — create_label.
+# NOTE: after the Phase 5 checkpoint refactor, create/update now send a
+# JSON body via `gh api --input -` (stdin), not `-f key=value` fields.
+# The body is captured as `call_args.kwargs["input"]` — a JSON string.
 def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
     mock_run = _mock_gh_success(mocker, "")
     create_label(
@@ -139,9 +142,14 @@ def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
     assert "repos/yakkuro/gh-manage/labels" in args
     assert "-X" in args
     assert "POST" in args
-    assert "name=chore" in args
-    assert "color=e1e7eb" in args
-    assert "description=housekeeping" in args
+    assert "--input" in args
+    assert "-" in args
+    body = json.loads(mock_run.call_args.kwargs["input"])
+    assert body == {
+        "name": "chore",
+        "color": "e1e7eb",
+        "description": "housekeeping",
+    }
 
 
 # Happy path — update_label with rename
@@ -158,9 +166,13 @@ def test_update_label_with_rename_includes_new_name(
     assert "repos/yakkuro/gh-manage/labels/bug" in args
     assert "-X" in args
     assert "PATCH" in args
-    assert "new_name=fix" in args
-    assert "color=d73a4a" in args
-    assert "description=Bug fix" in args
+    assert "--input" in args
+    body = json.loads(mock_run.call_args.kwargs["input"])
+    assert body == {
+        "new_name": "fix",
+        "color": "d73a4a",
+        "description": "Bug fix",
+    }
 
 
 # Happy path — update_label without rename
@@ -177,12 +189,16 @@ def test_update_label_without_rename_omits_new_name(
     assert "repos/yakkuro/gh-manage/labels/fix" in args
     assert "-X" in args
     assert "PATCH" in args
-    assert not any("new_name=" in a for a in args)
-    assert "color=d73a4a" in args
-    assert "description=Updated desc" in args
+    body = json.loads(mock_run.call_args.kwargs["input"])
+    assert "new_name" not in body
+    assert body == {
+        "color": "d73a4a",
+        "description": "Updated desc",
+    }
 
 
-# Happy path — delete_label
+# Happy path — delete_label.
+# DELETE has no body, so stdin_input is None (no `input=` in call_args).
 def test_delete_label_calls_correct_endpoint(mocker: MockerFixture) -> None:
     mock_run = _mock_gh_success(mocker, "")
     delete_label("yakkuro/gh-manage", "bug")
@@ -190,3 +206,5 @@ def test_delete_label_calls_correct_endpoint(mocker: MockerFixture) -> None:
     assert "repos/yakkuro/gh-manage/labels/bug" in args
     assert "-X" in args
     assert "DELETE" in args
+    assert "--input" not in args
+    assert mock_run.call_args.kwargs.get("input") is None

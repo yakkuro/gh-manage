@@ -109,3 +109,41 @@ def test_run_gh_non_zero_exit_propagates_classified_error(
     _mock_gh_failure(mocker, "HTTP 404: Not Found\n")
     with pytest.raises(GhError):
         run_gh(["api", "repos/foo/bar/labels"])
+
+
+# Body/stdin semantics — regression for Codex PR #10 refactor #11.
+# run_gh_api(body=...) must serialize the dict to JSON, append
+# `--input -` to argv, and pipe the JSON into subprocess stdin.
+def test_run_gh_api_with_body_sends_json_via_stdin(
+    mocker: MockerFixture,
+) -> None:
+    import json
+
+    mock_run = _mock_gh_success(mocker, "")
+    run_gh_api(
+        "repos/foo/bar/labels",
+        method="POST",
+        body={"name": "bug", "color": "d73a4a", "nested": {"k": "v"}},
+    )
+    args = mock_run.call_args.args[0]
+    assert "--input" in args
+    assert "-" in args
+    assert "-X" in args
+    assert "POST" in args
+    stdin_input = mock_run.call_args.kwargs["input"]
+    assert json.loads(stdin_input) == {
+        "name": "bug",
+        "color": "d73a4a",
+        "nested": {"k": "v"},
+    }
+
+
+def test_run_gh_api_without_body_sends_no_stdin(
+    mocker: MockerFixture,
+) -> None:
+    """GET calls (body=None) must NOT append `--input -` nor pass stdin."""
+    mock_run = _mock_gh_success(mocker, "[]")
+    run_gh_api("repos/foo/bar/labels")
+    args = mock_run.call_args.args[0]
+    assert "--input" not in args
+    assert mock_run.call_args.kwargs.get("input") is None

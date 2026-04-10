@@ -77,7 +77,7 @@ def create_label(repo: str, label: Label) -> None:
     run_gh_api(
         f"repos/{repo}/labels",
         method="POST",
-        fields={
+        body={
             "name": label.name,
             "color": label.color,
             "description": label.description,
@@ -91,17 +91,17 @@ def update_label(repo: str, current_name: str, new_label: Label) -> None:
     If new_label.name != current_name the body includes new_name (rename).
     Otherwise only color/description are updated.
     """
-    fields = {
+    body: dict[str, str] = {
         "color": new_label.color,
         "description": new_label.description,
     }
     if new_label.name != current_name:
-        fields["new_name"] = new_label.name
+        body["new_name"] = new_label.name
 
     run_gh_api(
         f"repos/{repo}/labels/{current_name}",
         method="PATCH",
-        fields=fields,
+        body=body,
     )
 
 

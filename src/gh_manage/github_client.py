@@ -85,8 +85,11 @@ def _raise_classified_error(*, endpoint: str, returncode: int, stderr: str) -> N
     )
 
 
-def run_gh(args: list[str]) -> str:
+def run_gh(args: list[str], *, stdin_input: str | None = None) -> str:
     """Run `gh <args>` and return stdout.
+
+    `stdin_input`, if provided, is piped into the subprocess stdin. Used
+    by `run_gh_api` when a JSON body is sent via `--input -`.
 
     Raises GhNotInstalledError if gh is not on PATH.
     Raises a GhError subclass on non-zero exit (classified by stderr).
@@ -97,6 +100,7 @@ def run_gh(args: list[str]) -> str:
             capture_output=True,
             text=True,
             check=False,
+            input=stdin_input,
         )
     except FileNotFoundError as e:
         raise GhNotInstalledError(
@@ -117,24 +121,28 @@ def run_gh(args: list[str]) -> str:
 def run_gh_api(
     endpoint: str,
     method: str = "GET",
-    fields: dict[str, str] | None = None,
-    paginate: bool = False,
+    body: dict[str, Any] | None = None,
 ) -> Any:
     """Run `gh api <endpoint>` and return parsed JSON.
 
+    For non-GET requests with a JSON body, pass `body` as a dict. It is
+    serialized with `json.dumps` and piped to `gh api --input -`, which
+    avoids the type coercion quirks of `-f key=value` (which always sends
+    string values even for booleans/numbers/nested objects).
+
     Builds argv as:
-      gh api <endpoint> [-X METHOD] [-f key=value ...] [--paginate]
+      gh api <endpoint> [-X METHOD] [--input -]
     """
     args = ["api", endpoint]
     if method != "GET":
         args.extend(["-X", method])
-    if fields:
-        for key, value in fields.items():
-            args.extend(["-f", f"{key}={value}"])
-    if paginate:
-        args.append("--paginate")
 
-    stdout = run_gh(args)
+    stdin_input: str | None = None
+    if body is not None:
+        args.extend(["--input", "-"])
+        stdin_input = json.dumps(body)
+
+    stdout = run_gh(args, stdin_input=stdin_input)
     if not stdout.strip():
         return None
     try:
