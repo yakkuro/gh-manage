@@ -7,6 +7,7 @@ This guide shows how to use `yakkuro/gh-manage`'s reusable Python PR gate in you
 - Your project uses `uv` for dependency management and has a valid `pyproject.toml` at the working-directory root.
 - Your project has type hints on public functions (mypy will check `src/` by default).
 - Your code formatting matches `ruff format` defaults (the reusable runs `ruff format --check`).
+- **`yakkuro/gh-manage` access is enabled for your repository.** Because gh-manage is currently a private repository, your calling repo must be allowed to consume its reusable workflows. On the gh-manage repo, go to `Settings → Actions → General → Access` and set `"Accessible from repositories owned by the user 'yakkuro'"`. Without this, your workflow run fails with a "reusable workflow not found" error before the job starts.
 
 ## Minimal example
 

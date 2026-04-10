@@ -62,18 +62,44 @@ jobs:
         with:
           working-directory: tests/fixtures/projects/python-lint-fail
 
-      - name: Assert ruff failed
+      - name: Assert ruff composite outcome is failure
         shell: bash
         env:
           OUTCOME: ${{ steps.ruff.outcome }}
         run: |
           set -euo pipefail
-          echo "ruff outcome: ${OUTCOME}"
+          echo "ruff composite outcome: ${OUTCOME}"
           if [[ "${OUTCOME}" != "failure" ]]; then
-            echo "::error::python-lint-fail was expected to FAIL ruff but got outcome=${OUTCOME}"
+            echo "::error::run-ruff composite was expected to fail on python-lint-fail but got outcome=${OUTCOME}"
             exit 1
           fi
-          echo "Lint failed as expected (outcome=${OUTCOME})"
+          echo "run-ruff composite failed as expected"
+
+      # Verify the failure REASON, not just the outcome. Without this check,
+      # a broken composite action (e.g. typo, missing tool) would also
+      # produce outcome=failure and silently pass this smoke test.
+      - name: Verify failure reason is F401 (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/python-lint-fail
+        run: |
+          set -euo pipefail
+          set +e
+          ruff_output=$(uvx "ruff@0.8.0" check . 2>&1)
+          ruff_exit=$?
+          set -e
+          echo "ruff direct output:"
+          echo "${ruff_output}"
+          echo "ruff direct exit code: ${ruff_exit}"
+          if [[ ${ruff_exit} -eq 0 ]]; then
+            echo "::error::ruff exited 0 on python-lint-fail — fixture is broken or ruff no longer detects F401"
+            exit 1
+          fi
+          if ! echo "${ruff_output}" | grep -q "F401"; then
+            echo "::error::Expected 'F401' in ruff output but got:"
+            echo "${ruff_output}"
+            exit 1
+          fi
+          echo "Verified: ruff failed with F401 as expected"
 
   # ---------- Negative fixture: test failure ----------
   negative-python-test-fail:
@@ -106,7 +132,7 @@ jobs:
           set -euo pipefail
           uv run pytest -v
 
-      - name: Assert pytest failed
+      - name: Assert pytest outcome is failure
         shell: bash
         env:
           OUTCOME: ${{ steps.pytest.outcome }}
@@ -114,7 +140,32 @@ jobs:
           set -euo pipefail
           echo "pytest outcome: ${OUTCOME}"
           if [[ "${OUTCOME}" != "failure" ]]; then
-            echo "::error::python-test-fail was expected to FAIL pytest but got outcome=${OUTCOME}"
+            echo "::error::pytest was expected to fail on python-test-fail but got outcome=${OUTCOME}"
             exit 1
           fi
-          echo "Tests failed as expected (outcome=${OUTCOME})"
+          echo "pytest failed as expected"
+
+      # Verify the failure REASON, not just the outcome. Without this check,
+      # a collection error or environment failure would silently pass.
+      - name: Verify failure reason is AssertionError (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
+        run: |
+          set -euo pipefail
+          set +e
+          pytest_output=$(uv run pytest -v 2>&1)
+          pytest_exit=$?
+          set -e
+          echo "pytest direct output:"
+          echo "${pytest_output}"
+          echo "pytest direct exit code: ${pytest_exit}"
+          if [[ ${pytest_exit} -eq 0 ]]; then
+            echo "::error::pytest exited 0 on python-test-fail — fixture is broken"
+            exit 1
+          fi
+          if ! echo "${pytest_output}" | grep -qE "AssertionError|assert"; then
+            echo "::error::Expected 'AssertionError' or 'assert' in pytest output but got:"
+            echo "${pytest_output}"
+            exit 1
+          fi
+          echo "Verified: pytest failed with assertion as expected"

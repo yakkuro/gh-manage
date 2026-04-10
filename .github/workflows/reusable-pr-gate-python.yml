@@ -51,16 +51,48 @@ jobs:
     name: PR Gate
     runs-on: ubuntu-latest
     steps:
+      # GitHub Actions resolves `./<path>` references in a reusable workflow
+      # against the runner's current workspace, which (after checkout of the
+      # caller) contains the caller's repository, not gh-manage's. To make the
+      # Layer-2 composite actions available in BOTH same-repo and cross-repo
+      # invocations, the reusable workflow self-checks-out gh-manage into
+      # `.gh-manage/` and references actions from there.
+      - name: Extract gh-manage ref from github.workflow_ref
+        id: self-ref
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # github.workflow_ref is like:
+          # "yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@refs/heads/feat/foo"
+          # or "...@v0.1.0" when pinned to an immutable tag.
+          ref="${WORKFLOW_REF##*@}"
+          if [[ -z "${ref}" ]]; then
+            echo "::error::Could not parse gh-manage ref from github.workflow_ref='${WORKFLOW_REF}'"
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "gh-manage ref resolved to: ${ref}"
+
       - name: Checkout consumer repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Checkout gh-manage (self, for Layer-2 composite actions)
+        uses: actions/checkout@v4
+        with:
+          repository: yakkuro/gh-manage
+          ref: ${{ steps.self-ref.outputs.ref }}
+          path: .gh-manage
+          fetch-depth: 1
+
       - name: Log gh-manage version
-        uses: ./actions/log-gh-manage-version
+        uses: ./.gh-manage/actions/log-gh-manage-version
 
       - name: Set up Python and uv
-        uses: ./actions/setup-python-uv
+        uses: ./.gh-manage/actions/setup-python-uv
         with:
           python-version: ${{ inputs.python-version }}
           uv-version: ${{ inputs.uv-version }}
@@ -73,18 +105,19 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::install"
+          echo "Running install-command: ${INSTALL_CMD}"
           eval "${INSTALL_CMD}"
           echo "::endgroup::"
 
       - name: Run ruff (if lint enabled)
         if: inputs.lint
-        uses: ./actions/run-ruff
+        uses: ./.gh-manage/actions/run-ruff
         with:
           working-directory: ${{ inputs.working-directory }}
 
       - name: Run mypy (if type-check enabled)
         if: inputs.type-check
-        uses: ./actions/run-mypy
+        uses: ./.gh-manage/actions/run-mypy
         with:
           working-directory: ${{ inputs.working-directory }}
 
@@ -97,6 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::setup-command"
+          echo "Running setup-command: ${SETUP_CMD}"
           if ! eval "${SETUP_CMD}"; then
             echo "::error::setup-command failed: ${SETUP_CMD}"
             exit 1
@@ -111,5 +145,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::test"
+          echo "Running test-command: ${TEST_CMD}"
           eval "${TEST_CMD}"
           echo "::endgroup::"
