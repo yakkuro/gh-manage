@@ -1,6 +1,6 @@
 [project]
 name = "gh-manage"
-version = "0.0.0"
+version = "0.1.0"
 description = "GitHub-based CI/CD, Issue management, and operational system for yakkuro/* repositories."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -38,6 +38,7 @@ dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
     "pytest-mock>=3.12,<4",
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]

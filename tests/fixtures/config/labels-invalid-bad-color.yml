@@ -1,0 +1,7 @@
+version: 1
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "not-a-color"
