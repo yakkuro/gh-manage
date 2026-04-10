@@ -32,6 +32,7 @@ Directly from `docs/specs/2026-04-10-gh-manage-design.md` lines 837-843, with Ph
 - [ ] `.gitignore` contains `.claude/`
 - [ ] `docs/plans/2026-04-10-phase-1-reusable-pr-gate-python.md` file-count typo fixed (12 → 15)
 - [ ] `docs/specs/2026-04-10-gh-manage-design.md` has the v0.2.0 pnpm-only deviation note in the `reusable-pr-gate-typescript.yml` section
+- [ ] `docs/usage/typescript.md` Prerequisites section explicitly states "Phase 2 v0.2.0 supports pnpm only; npm and yarn support is planned for a future release"
 - [ ] 4-reviewer cross-agent review completed with no open CRITICAL/HIGH findings
 - [ ] gh-manage's own `ci.yml` (Python self-dogfood) remains green through the entire PR
 
@@ -63,7 +64,7 @@ Layer 1: Shell scripts
 ### New for Phase 2
 
 - **Consumer contract**: consumer repo must have `package.json`, `pnpm-lock.yaml`, `eslint.config.js` (flat config; eslint 9.x), and `tsconfig.json` at `working-directory`. This is analogous to Phase 1's `pyproject.toml` requirement.
-- **pnpm bootstrap order**: `setup-node-pnpm` installs pnpm *before* `actions/setup-node@v4` because `setup-node`'s `cache: pnpm` requires pnpm to exist on `PATH`.
+- **pnpm bootstrap order**: `setup-node-pnpm` runs `pnpm/action-setup@v4` *before* `actions/setup-node@v4`. This order is the canonical pnpm+Node pattern and is kept even though v0.2.0 skips `cache: pnpm` (so that adding caching in a follow-up is a one-line addition to the composite).
 - **Package manager scope**: v0.2.0 locks to pnpm only. The `package-manager` input from the original design spec (pnpm/npm/yarn) is NOT implemented in this phase; a follow-up phase can add npm/yarn if a consumer demands it. This deviation is recorded in the v0.2.0 CHANGELOG and `docs/usage/typescript.md` prerequisites.
 
 ### Non-goals for v0.2.0
@@ -74,6 +75,8 @@ Layer 1: Shell scripts
 - `docs/versioning.md` stub — Phase 9 deliverable per the main design spec
 - Cross-repo empirical validation — deferred to Phase 3 (port-registry adoption)
 - Caching `pnpm-lock.yaml` via `setup-node`'s `cache: pnpm` — deferred for path-plumbing reasons documented in the `setup-node-pnpm` component section
+- **Non-root `working-directory` testing**: all 3 fixtures live at top-level subdirectories under `tests/fixtures/projects/`; the reusable workflow IS invoked with `working-directory: tests/fixtures/projects/typescript-sample` in the smoke test, so the non-root case IS exercised. But there are no fixtures testing deeper nesting (e.g., monorepo `packages/client/`), nor is the `install-command`/`test-command` interaction with deep paths validated beyond what Phase 1 already tested. Deep-nested working-directory support is deferred to Phase 3 where port-registry will exercise it.
+- **Version skew detection**: the spec does NOT test pnpm-8-generated lockfiles with pnpm-9 runtime, nor Node-version / TypeScript-target mismatches (e.g., Node 18 with `target: ES2024`). These are realistic Phase 3 cross-repo failure modes and are left for hotfix in v0.2.1 if they surface.
 
 ### Main design spec deviation to record
 
@@ -94,7 +97,11 @@ The main design spec (`docs/specs/2026-04-10-gh-manage-design.md` line 280) list
 | `lint` | boolean | `true` | |
 | `type-check` | boolean | `true` | |
 | `setup-command` | string | `""` | |
-| `pnpm-version` | string | pinned default, resolved in plan phase via `pnpm view pnpm version` | |
+| `pnpm-version` | string | exact patch version, hardcoded during plan phase (see below) | |
+
+**pnpm-version default resolution**: The plan author runs `pnpm view pnpm version` on 2026-04-10 (or at plan start), picks the exact patch (e.g., `9.15.2`), and hardcodes that value as the `default:` in `reusable-pr-gate-typescript.yml` AND in `actions/setup-node-pnpm/action.yml`. No placeholder string (`"latest"`, `""`) is allowed — both defaults must be concrete semver at commit time. Same pattern applies to `eslint-version` and `typescript-version` in their respective composite actions.
+
+**Node version requirement**: `node-version` is consumer-supplied, but gh-manage's tool pins require Node 18+ (TypeScript 5.x minimum). The input description documents this: `"Node.js version (e.g., '20', '22'). Must be 18 or higher."`. Consumers passing `"14"` or similar will see tsc or install failures with unrelated-looking error messages; this is intentional — gh-manage does not add runtime version guards.
 
 **Pipeline** (preserves Phase 1 order so consumers can reason about both reusables uniformly):
 
@@ -194,7 +201,15 @@ All under `tests/fixtures/projects/typescript-*/`. Each fixture is a minimal but
 - `tests/index.test.ts` — vitest test that imports `add`. Passes because vitest runs uncompiled TS (no type checking at runtime) and `"string"` is coerced at runtime in JS arithmetic, so the function still returns a number-like value. The failing assertion is intentional to be clean on vitest — see the local verification table below for exact behavior.
 - Expected: **eslint clean** (the `const x` is used → no-unused-vars does not fire); **tsc fails** with `TS2322` in stdout; **vitest passes** when run directly because vitest strips types
 - Rationale: `TS2322` is a fundamental TS error code that has been stable for 10+ years. Using `x` in the return expression keeps it from triggering `no-unused-vars`.
-- **Plan-phase verification**: the implementer MUST confirm `pnpm test` exits 0 on this fixture. If vitest rejects runtime string coercion, adjust the fixture to isolate the type error in a way that still runs cleanly (e.g., `const x: number = "string" as unknown as number;` removed — this defeats the purpose; instead, use `const x = (42 as number); const y: string = x;` pattern).
+- **Plan-phase verification**: the implementer MUST confirm `pnpm test` exits 0 on this fixture. The primary form uses `x` in the return expression, which causes the runtime value of `add(1, 2)` to be `"3string"` (string concatenation) instead of `3`. If the vitest test asserts `expect(add(1, 2)).toBe(3)`, it will fail. **Recommended fallback form** that keeps runtime behavior clean:
+  ```ts
+  export function add(a: number, b: number): number {
+    const x: string = 42; // TS2322: type 'number' is not assignable to type 'string'
+    void x;                // satisfies eslint no-unused-vars without affecting runtime
+    return a + b;
+  }
+  ```
+  `void x` is an expression that discards its operand; eslint's `no-unused-vars` rule counts it as a use. tsc still fails with `TS2322` on the `const x` line. vitest runs `add(1, 2)` which returns `3` cleanly. Either form is acceptable; the implementer picks whichever satisfies all 4 L1 verification checks (see § Testing Strategy 5.3).
 
 ### `smoke-test.yml` extension
 
@@ -268,7 +283,7 @@ Runtime sequence on the GHA runner:
 4. Step `Checkout consumer repository` (`actions/checkout@v4`) populates `$GITHUB_WORKSPACE/` with the consumer's code at the triggering SHA.
 5. Step `Checkout gh-manage (self)` (`actions/checkout@v4` with `repository: yakkuro/gh-manage`, `ref: v0.2.0`, `path: .gh-manage`) populates `$GITHUB_WORKSPACE/.gh-manage/` with gh-manage's tree at `v0.2.0`.
 6. `log-gh-manage-version` composite runs.
-7. `setup-node-pnpm` composite runs: pnpm installed first, then Node, then `cache: pnpm` picks up `pnpm-lock.yaml` from the default path.
+7. `setup-node-pnpm` composite runs: `pnpm/action-setup@v4` installs pnpm first, then `actions/setup-node@v4` installs Node. Lockfile caching (`cache: pnpm`) is intentionally NOT configured in v0.2.0 — see the `setup-node-pnpm` component section for the rationale.
 8. Inline install step runs `pnpm install --frozen-lockfile` with `working-directory: ${{ inputs.working-directory }}` (consumer's tree).
 9. `run-eslint` composite runs if `lint: true`. `working-directory: ${{ inputs.working-directory }}`. Reads `eslint.config.js` from consumer's tree.
 10. `run-tsc` composite runs if `type-check: true`. Reads `tsconfig.json` from consumer's tree.
@@ -290,6 +305,8 @@ Composite actions referenced via `./.gh-manage/actions/<name>` resolve their `ac
 ### Cross-repo validation: not in Phase 2
 
 As documented in Phase 1's CHANGELOG, cross-repo invocation (consumer outside gh-manage calling the reusable) has never been empirically validated. Phase 2 continues the pattern and also does NOT test cross-repo. Phase 3 (port-registry adoption) will exercise both Python and TypeScript reusables from an external consumer; any issues surface there and are hotfixed in `v0.2.1`.
+
+**Shared risk with Phase 1**: if Phase 3 reveals a fundamental flaw in the self-checkout pattern (e.g., `github.workflow_ref` parsing behaves differently for external callers, or checkout path resolution differs), BOTH the Python and TypeScript reusables are affected. The fix surface is shared: correcting the Layer 3 self-checkout block once in both reusable workflows. The Phase 2 PR does not need to defensively mitigate this — the same risk was already accepted for v0.1.0.
 
 ## Error Handling
 
@@ -394,7 +411,16 @@ pnpm dlx "typescript@<pin>" tsc --noEmit ; echo "exit=$?"   # expect non-zero + 
 pnpm test
 ```
 
-Red-Green discipline: if a negative fixture accidentally passes (tool exits 0), the fixture is broken or the rule/error no longer triggers. The plan must include explicit Red verification.
+**Red verification protocol** (what "confirm fails with specific reason" means operationally):
+
+For each negative fixture, during local L1 verification the implementer MUST:
+
+1. **Exit-code check**: run the tool (`pnpm dlx eslint@<pin> .` or `pnpm dlx typescript@<pin> tsc --noEmit`) — confirm non-zero exit status.
+2. **Reason check**: capture stderr+stdout and `grep` for the expected identifier (`no-unused-vars` or `TS2322`). Confirm the identifier appears in the captured output.
+3. **Isolation check**: the OTHER tool (eslint for type-fail, tsc for lint-fail) must exit 0. This proves the fixture's failure is isolated to the intended dimension and isn't leaking into the other check.
+4. **Vitest check**: `pnpm test` must exit 0. This proves the fixture's test suite is runnable independent of lint/type errors.
+
+If any of the 4 checks fails, the fixture is broken and must be adjusted before pushing. The smoke-test CI-level assertions (described in § Error Handling 4.3) are a second layer that catches regressions after merge, but L1 is where the fixture is declared correct.
 
 ### gh-manage's own CI
 
