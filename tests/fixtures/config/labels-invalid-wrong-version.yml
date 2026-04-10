@@ -1,0 +1,7 @@
+version: 99
+categories:
+  type:
+    description: "Issue type labels"
+    labels:
+      - name: "bug"
+        color: "d73a4a"
