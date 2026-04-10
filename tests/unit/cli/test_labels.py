@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 from pytest_mock import MockerFixture
 
 from gh_manage.cli import main
-from gh_manage.commands.labels import _parse_repo
 from gh_manage.github_client import GhAuthError, GhNotFoundError, Label
 from gh_manage.labels_sync import (
     LabelCreate,
@@ -43,17 +41,9 @@ def _write_minimal_config(path: Path) -> None:
     )
 
 
-# _parse_repo — parametrized (Q6 C)
-@pytest.mark.parametrize(
-    ("input_repo", "expected"),
-    [
-        ("gh-manage", "yakkuro/gh-manage"),
-        ("yakkuro/gh-manage", "yakkuro/gh-manage"),
-        ("other-org/other-repo", "other-org/other-repo"),
-    ],
-)
-def test_parse_repo_normalization(input_repo: str, expected: str) -> None:
-    assert _parse_repo(input_repo) == expected
+# Note: parse_repo unit tests live in tests/unit/test_repo_ref.py now.
+# test_sync_bare_repo_prepends_yakkuro / test_sync_owner_slash_repo_passes_through
+# below still cover the integration (CLI arg → github_client.list_labels call).
 
 
 # sync command

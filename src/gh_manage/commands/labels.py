@@ -15,22 +15,11 @@ from gh_manage.config import ConfigError, load_config
 from gh_manage.github_client import GhError
 from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
+from gh_manage.repo_ref import InvalidRepoRefError, parse_repo
 
-DEFAULT_OWNER = "yakkuro"
 DEFAULT_CONFIG_PATH = Path("config/labels.yml")
 
 _F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _parse_repo(repo: str) -> str:
-    """Normalize bare name to owner/repo (Q6 C).
-
-    Called by ALL THREE subcommands (sync, diff, show) on their `<repo>`
-    argument to keep repo normalization consistent.
-    """
-    if "/" in repo:
-        return repo
-    return f"{DEFAULT_OWNER}/{repo}"
 
 
 def _format_diff(diff: LabelsDiff) -> str:
@@ -57,7 +46,8 @@ def _format_diff(diff: LabelsDiff) -> str:
 
 
 def _handle_errors(func: _F) -> _F:
-    """Decorator: catch GhError/ConfigError and re-raise as click.ClickException.
+    """Decorator: catch GhError/ConfigError/InvalidRepoRefError and re-raise
+    as click.ClickException.
 
     click.ClickException prints `Error: <msg>` to stderr and exits 1.
     """
@@ -66,7 +56,7 @@ def _handle_errors(func: _F) -> _F:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except (GhError, ConfigError) as e:
+        except (GhError, ConfigError, InvalidRepoRefError) as e:
             raise click.ClickException(str(e)) from e
 
     return wrapper  # type: ignore[return-value]
@@ -118,7 +108,7 @@ def sync(
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
 
-    qualified = _parse_repo(repo)
+    qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
     current = github_client.list_labels(qualified)
 
@@ -162,7 +152,7 @@ def sync(
 )
 @_handle_errors
 def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
-    qualified = _parse_repo(repo)
+    qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
     current = github_client.list_labels(qualified)
 
@@ -186,7 +176,7 @@ def show(repo: str) -> None:
     """Show does NOT load config/labels.yml — it lists the repo's current
     state. No --config flag, no config validation. The only failure modes
     are GhError subclasses from the list_labels call."""
-    qualified = _parse_repo(repo)
+    qualified = parse_repo(repo)
     current = github_client.list_labels(qualified)
     for label in sorted(current, key=lambda lb: lb.name):
         click.echo(f"{label.name}  color={label.color}  desc={label.description!r}")
