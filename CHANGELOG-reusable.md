@@ -8,6 +8,31 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 _Nothing yet._
 
+## [0.2.1] - 2026-04-10
+
+Hotfix release. The Phase 3 first-external-consumer test (yakkuro/llm-kb) discovered that v0.2.0's self-checkout pattern is fundamentally broken for cross-repo invocation. v0.2.1 replaces the implicit `github.workflow_ref` parsing with an explicit `gh-manage-ref` input that the consumer must specify.
+
+### Fixed
+
+- **Cross-repo self-checkout** (CRITICAL) — both `reusable-pr-gate-python.yml` and `reusable-pr-gate-typescript.yml` previously parsed `github.workflow_ref` to determine which gh-manage ref to check out for Layer-2 composite actions. The assumption was that `github.workflow_ref` reflects the called reusable workflow's ref. **It does not.** GitHub Actions populates `github.workflow_ref` with the **top-level caller's** workflow ref, not the called reusable's ref. In same-repo dogfood (Phases 1 and 2), the consumer ref happened to coincide with the gh-manage ref, masking the bug. In cross-repo (Phase 3), the parser returned the consumer's PR merge ref (e.g., `refs/pull/14/merge`), which the gh-manage repo does not contain, and the self-checkout step failed with `fatal: couldn't find remote ref refs/pull/14/merge`.
+
+  **Fix**: replace the implicit parser with a new required input `gh-manage-ref`. Consumers MUST pass the same `@<ref>` they used in `uses:`. The duplication is required because GitHub Actions does not allow dynamic values in `uses:` lines, and there is no built-in context variable that exposes the called workflow's own ref.
+
+  Affected: every cross-repo consumer of v0.2.0. Workaround: pin to v0.2.1 and add the new required input. Same-repo dogfood and smoke-test now pass `${{ github.sha }}`.
+
+### Added
+
+- **`gh-manage-ref` input on both reusable workflows** — required, string. See the input description in `reusable-pr-gate-{python,typescript}.yml` for the full rationale, or `docs/usage/{python,typescript}.md` for consumer-facing examples.
+
+### Changed
+
+- **`docs/usage/python.md` and `docs/usage/typescript.md`** — minimal example, Inputs table, Disabling checks, and Setup command examples all updated to show the new `gh-manage-ref` input. Bumped pin references from `@v0.1.0` / `@v0.2.0` to `@v0.2.1`.
+- **`gh-manage` repository visibility** — `yakkuro/gh-manage` was switched from private to public on 2026-04-10 to enable cross-repo `actions/checkout@v4` from consumer runners. The default `GITHUB_TOKEN` of a consumer repo can clone public repositories without additional configuration; private would have required PAT setup for every consumer. This is a one-time visibility change documented here for traceability.
+
+### Known limitations (carried forward from v0.2.0)
+
+All v0.2.0 known limitations still apply (pnpm only, eslint pinning recommendation-only, Node 20+ minimum, no `cache: pnpm`, non-root working-directory test gap, version skew detection gap, Python tool refresh deferred).
+
 ## [0.2.0] - 2026-04-10
 
 Second release. Adds the TypeScript PR gate alongside the Phase 1 Python gate and fixes a latent `github.workflow_ref` parser bug shared by both reusables.
@@ -74,6 +99,7 @@ _N/A — first release._
 - **Cross-repo self-checkout has NOT been empirically validated** in v0.1.0 — the same-repo dogfood (gh-manage's own `ci.yml`) and smoke-test are the only tested invocation paths. Phase 3 (port-registry adoption) will be the first real cross-repo test. If issues arise, they will be fixed in v0.1.1 or v0.2.0.
 - **Pinned tool versions are not the latest available** as of 2026-04-10. `uv` is pinned at 0.5.0 (latest: 0.11.6), `ruff` at 0.8.0 (latest: 0.15.10), `mypy` at 1.12.0 (latest: 1.20.0). Tool version refresh is scheduled for v0.2.0.
 
-[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/yakkuro/gh-manage/releases/tag/v0.2.1
 [0.2.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.2.0
 [0.1.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.1.0

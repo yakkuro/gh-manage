@@ -21,3 +21,7 @@ jobs:
       working-directory: "."
       install-command: "uv sync"
       test-command: "uv run pytest"
+      # Same-repo dogfood: pass the current commit SHA so the reusable
+      # checks out THIS PR's gh-manage tree (not a tagged release). This
+      # is what makes dogfood actually exercise in-PR action changes.
+      gh-manage-ref: ${{ github.sha }}

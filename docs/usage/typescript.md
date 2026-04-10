@@ -26,10 +26,13 @@ on:
 
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.1
     with:
       node-version: "20"
+      gh-manage-ref: "v0.2.1"  # MUST match the @<ref> on the line above
 ```
+
+> **Why `gh-manage-ref` is required and duplicated**: GitHub Actions does not expose the called reusable workflow's own ref to the workflow at runtime — `github.workflow_ref` reflects the top-level caller's workflow (yours, not gh-manage's). To make the reusable's internal `actions/checkout@v4` of `yakkuro/gh-manage` work, you must pass the gh-manage version explicitly. Keep both `@v0.2.1` and `gh-manage-ref: "v0.2.1"` in sync.
 
 That's it. The workflow will:
 
@@ -45,6 +48,7 @@ That's it. The workflow will:
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `node-version` | string | **required** | Node.js version to install (e.g., `"20"`, `"22"`). Must be 20 or higher. |
+| `gh-manage-ref` | string | **required** | Same value as the `@<ref>` you used in `uses:`. See the note above the Minimal example. |
 | `working-directory` | string | `"."` | Project directory inside the repo. Set this if your TypeScript project lives in a subdirectory. |
 | `install-command` | string | `"pnpm install --frozen-lockfile"` | Dependency install command. |
 | `test-command` | string | `"pnpm test"` | Test command. |
@@ -119,9 +123,10 @@ If your project can't pass `tsc` yet (or you don't want it), disable it:
 ```yaml
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.1
     with:
       node-version: "20"
+      gh-manage-ref: "v0.2.1"
       type-check: false
 ```
 
@@ -134,9 +139,10 @@ If your tests need a database or filesystem initialization step:
 ```yaml
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v0.2.1
     with:
       node-version: "20"
+      gh-manage-ref: "v0.2.1"
       setup-command: "pnpm exec tsx scripts/init-db.ts"
 ```
 
