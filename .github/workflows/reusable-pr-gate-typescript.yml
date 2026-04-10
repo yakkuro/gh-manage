@@ -42,6 +42,10 @@ on:
         required: false
         type: string
         default: "10.33.0"
+      gh-manage-ref:
+        description: "Ref of yakkuro/gh-manage to check out for Layer-2 composite actions. MUST match the @<ref> you used in the uses: line. See docs/usage/typescript.md for the rationale."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -51,46 +55,20 @@ jobs:
     name: PR Gate
     runs-on: ubuntu-latest
     steps:
-      # GitHub Actions resolves `./<path>` references in a reusable workflow
-      # against the runner's current workspace, which (after checkout of the
-      # caller) contains the caller's repository, not gh-manage's. To make the
-      # Layer-2 composite actions available in BOTH same-repo and cross-repo
-      # invocations, the reusable workflow self-checks-out gh-manage into
-      # `.gh-manage/` and references actions from there.
-      - name: Extract gh-manage ref from github.workflow_ref
-        id: self-ref
-        shell: bash
-        env:
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          set -euo pipefail
-          # github.workflow_ref is "<owner>/<repo>/<path-to-workflow>@<ref>".
-          # The workflow path always ends with `.yml`, so strip the shortest
-          # prefix up to and including `.yml@` — this correctly handles refs
-          # that themselves contain `@` (e.g., `release@candidate`). A naive
-          # `${VAR##*@}` (longest prefix) would truncate such refs.
-          if [[ "${WORKFLOW_REF}" != *.yml@* ]]; then
-            echo "::error::Unexpected github.workflow_ref format (missing .yml@): ${WORKFLOW_REF}"
-            exit 1
-          fi
-          ref="${WORKFLOW_REF#*.yml@}"
-          if [[ -z "${ref}" ]]; then
-            echo "::error::Empty ref parsed from github.workflow_ref='${WORKFLOW_REF}'"
-            exit 1
-          fi
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-          echo "gh-manage ref resolved to: ${ref}"
-
       - name: Checkout consumer repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Layer-2 composite actions live in this repo (yakkuro/gh-manage) and
+      # are referenced via `./.gh-manage/actions/<name>` after this checkout.
+      # Cross-repo consumers MUST pin `gh-manage-ref` to the same `@<ref>`
+      # they used in the `uses:` line — see input description above.
       - name: Checkout gh-manage (self, for Layer-2 composite actions)
         uses: actions/checkout@v4
         with:
           repository: yakkuro/gh-manage
-          ref: ${{ steps.self-ref.outputs.ref }}
+          ref: ${{ inputs.gh-manage-ref }}
           path: .gh-manage
           fetch-depth: 1
 

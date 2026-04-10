@@ -30,6 +30,9 @@ jobs:
     with:
       python-version: "3.12"
       working-directory: tests/fixtures/projects/python-sample
+      # Smoke-test passes the current commit SHA so the reusable's
+      # self-checkout fetches the in-PR gh-manage tree, not a release tag.
+      gh-manage-ref: ${{ github.sha }}
 
   # ---------- Negative fixture: lint failure ----------
   # GitHub Actions does NOT support continue-on-error at the job level for
@@ -179,6 +182,7 @@ jobs:
     with:
       node-version: "20"
       working-directory: tests/fixtures/projects/typescript-sample
+      gh-manage-ref: ${{ github.sha }}
 
   # ---------- Negative TypeScript fixture: lint failure ----------
   # Same reasoning as the Python negative jobs: GitHub Actions does NOT

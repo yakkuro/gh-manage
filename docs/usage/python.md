@@ -22,10 +22,13 @@ on:
 
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.1.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.2.1
     with:
       python-version: "3.12"
+      gh-manage-ref: "v0.2.1"  # MUST match the @<ref> on the line above
 ```
+
+> **Why `gh-manage-ref` is required and duplicated**: GitHub Actions does not expose the called reusable workflow's own ref to the workflow at runtime — `github.workflow_ref` reflects the top-level caller's workflow (yours, not gh-manage's). To make the reusable's internal `actions/checkout@v4` of `yakkuro/gh-manage` work, you must pass the gh-manage version explicitly. Keep both `@v0.2.1` and `gh-manage-ref: "v0.2.1"` in sync; mismatching them produces an obvious error at job start. (We agree the duplication is ugly. The cleanest workaround would require breaking changes to the cross-repo reusable workflow contract.)
 
 That's it. The workflow will:
 
@@ -41,6 +44,7 @@ That's it. The workflow will:
 | Input | Type | Default | Description |
 |---|---|---|---|
 | `python-version` | string | **required** | Python version to install (e.g., `"3.12"`). |
+| `gh-manage-ref` | string | **required** | Same value as the `@<ref>` you used in `uses:`. See the note above the Minimal example. |
 | `working-directory` | string | `"."` | Project directory inside the repo. Set this if your Python project lives in a subdirectory. |
 | `install-command` | string | `"uv sync"` | Dependency install command. |
 | `test-command` | string | `"uv run pytest"` | Test command. |
@@ -68,9 +72,10 @@ If your project can't pass `mypy` yet (or you don't want it), disable it:
 ```yaml
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.1.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.2.1
     with:
       python-version: "3.12"
+      gh-manage-ref: "v0.2.1"
       type-check: false
 ```
 
@@ -83,9 +88,10 @@ If your tests need a database or filesystem initialization step:
 ```yaml
 jobs:
   pr-gate:
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.1.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v0.2.1
     with:
       python-version: "3.12"
+      gh-manage-ref: "v0.2.1"
       setup-command: "uv run python scripts/init_db.py"
 ```
 
