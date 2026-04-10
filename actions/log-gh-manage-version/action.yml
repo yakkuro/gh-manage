@@ -1,0 +1,18 @@
+name: Log gh-manage version
+description: >
+  Print the gh-manage action ref, repository, workflow SHA, and UTC timestamp
+  to the workflow log for debugging and traceability.
+
+runs:
+  using: composite
+  steps:
+    - name: Log gh-manage version info
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::gh-manage version info"
+        echo "action_ref:        ${GITHUB_ACTION_REF:-<unknown>}"
+        echo "action_repository: ${GITHUB_ACTION_REPOSITORY:-<unknown>}"
+        echo "workflow_sha:      ${GITHUB_SHA:-<unknown>}"
+        echo "timestamp_utc:     $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "::endgroup::"

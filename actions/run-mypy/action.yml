@@ -1,0 +1,34 @@
+name: Run mypy
+description: >
+  Run mypy on the project's `src/` directory using a pinned mypy release.
+  mypy is invoked via `uv run --with mypy==<version>` so it sees the
+  project's declared dependencies and resolves stubs correctly.
+
+inputs:
+  working-directory:
+    description: "Directory where mypy should operate. Defaults to the repo root."
+    required: false
+    default: "."
+  mypy-version:
+    description: "mypy version pin. Bumping this is a gh-manage concern."
+    required: false
+    default: "1.12.0"
+  target:
+    description: "Path (relative to working-directory) that mypy should type-check."
+    required: false
+    default: "src"
+
+runs:
+  using: composite
+  steps:
+    - name: Run mypy
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        MYPY_VERSION: ${{ inputs.mypy-version }}
+        MYPY_TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        echo "::group::mypy ${MYPY_TARGET}"
+        uv run --with "mypy==${MYPY_VERSION}" mypy "${MYPY_TARGET}"
+        echo "::endgroup::"
