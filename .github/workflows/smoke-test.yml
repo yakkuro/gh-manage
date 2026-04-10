@@ -1,0 +1,171 @@
+name: Smoke Test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/smoke-test.yml'
+      - 'actions/**'
+      - 'tests/fixtures/projects/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/smoke-test.yml'
+      - 'actions/**'
+      - 'tests/fixtures/projects/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------- Positive fixture ----------
+  positive-python-sample:
+    name: smoke / python-sample (expect pass)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-sample
+
+  # ---------- Negative fixture: lint failure ----------
+  # GitHub Actions does NOT support continue-on-error at the job level for
+  # reusable workflow calls (jobs.<id>.uses). Negative fixtures therefore use
+  # a regular job that invokes the run-ruff composite action directly with
+  # step-level continue-on-error, then asserts the outcome via steps.<id>.outcome.
+  negative-python-lint-fail:
+    name: smoke / python-lint-fail (expect ruff failure)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/python-lint-fail
+        run: |
+          set -euo pipefail
+          uv sync
+
+      - name: Run ruff composite (expect failure)
+        id: ruff
+        continue-on-error: true
+        uses: ./actions/run-ruff
+        with:
+          working-directory: tests/fixtures/projects/python-lint-fail
+
+      - name: Assert ruff composite outcome is failure
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.ruff.outcome }}
+        run: |
+          set -euo pipefail
+          echo "ruff composite outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::run-ruff composite was expected to fail on python-lint-fail but got outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "run-ruff composite failed as expected"
+
+      # Verify the failure REASON, not just the outcome. Without this check,
+      # a broken composite action (e.g. typo, missing tool) would also
+      # produce outcome=failure and silently pass this smoke test.
+      - name: Verify failure reason is F401 (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/python-lint-fail
+        run: |
+          set -euo pipefail
+          set +e
+          ruff_output=$(uvx "ruff@0.8.0" check . 2>&1)
+          ruff_exit=$?
+          set -e
+          echo "ruff direct output:"
+          echo "${ruff_output}"
+          echo "ruff direct exit code: ${ruff_exit}"
+          if [[ ${ruff_exit} -eq 0 ]]; then
+            echo "::error::ruff exited 0 on python-lint-fail — fixture is broken or ruff no longer detects F401"
+            exit 1
+          fi
+          if ! echo "${ruff_output}" | grep -q "F401"; then
+            echo "::error::Expected 'F401' in ruff output but got:"
+            echo "${ruff_output}"
+            exit 1
+          fi
+          echo "Verified: ruff failed with F401 as expected"
+
+  # ---------- Negative fixture: test failure ----------
+  negative-python-test-fail:
+    name: smoke / python-test-fail (expect pytest failure)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
+        run: |
+          set -euo pipefail
+          uv sync
+
+      - name: Run pytest (expect failure)
+        id: pytest
+        continue-on-error: true
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
+        run: |
+          set -euo pipefail
+          uv run pytest -v
+
+      - name: Assert pytest outcome is failure
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.pytest.outcome }}
+        run: |
+          set -euo pipefail
+          echo "pytest outcome: ${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::pytest was expected to fail on python-test-fail but got outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "pytest failed as expected"
+
+      # Verify the failure REASON, not just the outcome. Without this check,
+      # a collection error or environment failure would silently pass.
+      - name: Verify failure reason is AssertionError (direct tool run)
+        shell: bash
+        working-directory: tests/fixtures/projects/python-test-fail
+        run: |
+          set -euo pipefail
+          set +e
+          pytest_output=$(uv run pytest -v 2>&1)
+          pytest_exit=$?
+          set -e
+          echo "pytest direct output:"
+          echo "${pytest_output}"
+          echo "pytest direct exit code: ${pytest_exit}"
+          if [[ ${pytest_exit} -eq 0 ]]; then
+            echo "::error::pytest exited 0 on python-test-fail — fixture is broken"
+            exit 1
+          fi
+          if ! echo "${pytest_output}" | grep -qE "AssertionError|assert"; then
+            echo "::error::Expected 'AssertionError' or 'assert' in pytest output but got:"
+            echo "${pytest_output}"
+            exit 1
+          fi
+          echo "Verified: pytest failed with assertion as expected"

@@ -1,0 +1,40 @@
+name: Run ruff
+description: >
+  Install a pinned ruff release and run both `ruff check` and
+  `ruff format --check` in the given working directory. Fails the step
+  if either command reports issues.
+
+inputs:
+  working-directory:
+    description: "Directory where ruff should operate. Defaults to the repo root."
+    required: false
+    default: "."
+  ruff-version:
+    description: "ruff version pin. Bumping this is a gh-manage concern, not the consumer's."
+    required: false
+    default: "0.8.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Run ruff check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RUFF_VERSION: ${{ inputs.ruff-version }}
+      run: |
+        set -euo pipefail
+        echo "::group::ruff check"
+        uvx "ruff@${RUFF_VERSION}" check .
+        echo "::endgroup::"
+
+    - name: Run ruff format --check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RUFF_VERSION: ${{ inputs.ruff-version }}
+      run: |
+        set -euo pipefail
+        echo "::group::ruff format --check"
+        uvx "ruff@${RUFF_VERSION}" format --check .
+        echo "::endgroup::"
