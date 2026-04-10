@@ -525,7 +525,7 @@ pyproject.toml                       # add minimal ruff/mypy config if needed
   git log --oneline | head -3
   ```
 
-  Expected: commit succeeds with 12 files changed. The new commit appears as the most recent log entry.
+  Expected: commit succeeds with 15 files changed. The new commit appears as the most recent log entry.
 
 ---
 

@@ -30,3 +30,9 @@ Thumbs.db
 
 # Scratchpads
 .scratch/
+
+# Claude Code session artifacts
+.claude/
+
+# JavaScript/TypeScript project artifacts
+node_modules/
