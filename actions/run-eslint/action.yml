@@ -1,0 +1,31 @@
+name: Run eslint
+description: >
+  Run eslint against the consumer's devDependencies. Unlike ruff (Phase 1)
+  which is pinned inside the composite via `uvx`, eslint requires peer
+  dependencies (typescript-eslint, @eslint/js) that live alongside eslint
+  in the consumer's project. gh-manage documents recommended versions in
+  docs/usage/typescript.md and pins them in the fixture projects; strict
+  version enforcement is NOT applied here.
+
+  Consumer prerequisites:
+  - eslint.config.js (flat config; eslint 10.x) at working-directory
+  - eslint, typescript-eslint, @eslint/js in devDependencies
+  - pnpm install must have already run before this action
+
+inputs:
+  working-directory:
+    description: "Directory where eslint should operate. Defaults to the repo root."
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Run eslint
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        echo "::group::eslint"
+        pnpm exec eslint .
+        echo "::endgroup::"
