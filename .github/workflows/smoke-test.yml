@@ -301,7 +301,8 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          tsc_output=$(pnpm dlx "typescript@6.0.2" tsc --noEmit -p tsconfig.json 2>&1)
+          # pnpm 10+: use --package to disambiguate tsc vs tsserver bins
+          tsc_output=$(pnpm --package="typescript@6.0.2" dlx tsc --noEmit -p tsconfig.json 2>&1)
           tsc_exit=$?
           set -e
           echo "tsc direct output:"

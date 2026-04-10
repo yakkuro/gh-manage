@@ -31,5 +31,8 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::tsc --noEmit"
-        pnpm dlx "typescript@${TYPESCRIPT_VERSION}" tsc --noEmit -p "${TSCONFIG}"
+        # pnpm 10+: `pnpm dlx typescript@<ver> tsc` fails with
+        # ERR_PNPM_DLX_MULTIPLE_BINS because the typescript package
+        # ships both `tsc` and `tsserver`. Use `--package=` to disambiguate.
+        pnpm --package="typescript@${TYPESCRIPT_VERSION}" dlx tsc --noEmit -p "${TSCONFIG}"
         echo "::endgroup::"
