@@ -19,9 +19,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from gh_manage.github_api import protection as protection_api
 from gh_manage.models.branch_protection import PolicySpec
 from gh_manage.models.profiles import ProfileSpec
 
@@ -521,6 +525,63 @@ def apply_protection_diff(
     backup_dir: Path,
     progress: Callable[[str], None] = lambda _: None,
 ) -> None:
-    """Apply the protection diff with safety guards.
-    Implementation in Task 8."""
-    raise NotImplementedError("Task 8")
+    """Apply the protection diff with transactional safety guards.
+
+    Order of operations (LOAD-BEARING):
+      1. If diff.has_downgrades AND not downgrade_allowed → raise
+         ProtectionDowngradeError BEFORE any IO.
+      2. Pre-flight check backup_dir: if exists but not a directory,
+         raise ProtectionBackupError. Otherwise mkdir(parents, exist_ok).
+      3. Compute microsecond-unique backup filename, write YAML dump
+         of diff.current_raw. Failure → ProtectionBackupError, no PUT.
+      4. PUT the desired body via github_api.protection.put_branch_protection.
+      5. If PUT fails, propagate the GhError — backup remains on disk
+         for manual restore via `gh api ... --input <backup-file>`.
+
+    progress() is called twice: once before backup, once before PUT.
+    """
+    # Step 1: downgrade check (transactional, no IO)
+    if diff.has_downgrades and not downgrade_allowed:
+        raise ProtectionDowngradeError(diff.downgrades)
+
+    # Step 2: backup dir pre-flight
+    if backup_dir.exists() and not backup_dir.is_dir():
+        raise ProtectionBackupError(
+            f"Backup directory path exists but is not a directory: {backup_dir}. "
+            f"Remove or rename the file at this path, then re-run."
+        )
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ProtectionBackupError(
+            f"Cannot create backup directory {backup_dir}: {e}. "
+            f"Check filesystem permissions."
+        ) from e
+
+    # Step 3: backup write with microsecond-unique filename
+    owner_slug, _, repo_slug = repo.partition("/")
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S-%f")  # %f = microseconds
+    backup_filename = f"{owner_slug}-{repo_slug}-{timestamp}.yml"
+    backup_path = backup_dir / backup_filename
+
+    progress(f"backup → {backup_path}")
+    try:
+        backup_path.write_text(
+            yaml.safe_dump(
+                diff.current_raw,
+                default_flow_style=False,
+                sort_keys=True,
+                allow_unicode=True,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        raise ProtectionBackupError(
+            f"Cannot write backup to {backup_path}: {e}. "
+            f"Check disk space and write permissions on {backup_dir}."
+        ) from e
+
+    # Step 4: PUT — any failure propagates with backup preserved
+    progress(f"apply → {repo}:{target_branch}")
+    protection_api.put_branch_protection(repo, target_branch, diff.desired_raw)

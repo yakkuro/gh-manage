@@ -222,3 +222,199 @@ def test_compute_diff_raw_dicts_preserved() -> None:
     diff = compute_protection_diff(current_raw, policy, profile, "main")
     assert diff.current_raw == current_raw
     assert diff.desired_raw  # non-empty
+
+
+import re
+
+from pathlib import Path
+
+from pytest_mock import MockerFixture
+
+
+def _nonempty_diff(downgrades: tuple = ()) -> ProtectionDiff:
+    """Build a ProtectionDiff with at least one change for apply_diff tests."""
+    return ProtectionDiff(
+        changes=(ProtectionFieldChange("enforce_admins", False, True),),
+        downgrades=downgrades,
+        current_raw={"enforce_admins": {"enabled": False}},
+        desired_raw={"enforce_admins": True, "restrictions": None},
+    )
+
+
+# Downgrade check — transactional
+def test_apply_diff_downgrade_not_allowed_raises_before_io(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mock_put = mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    diff = _nonempty_diff(
+        downgrades=(DowngradeFinding("x", True, False, "weakened"),),
+    )
+    backup_dir = tmp_path / "backups"
+
+    with pytest.raises(ProtectionDowngradeError):
+        apply_protection_diff(
+            diff,
+            "yakkuro/gh-manage",
+            "main",
+            downgrade_allowed=False,
+            backup_dir=backup_dir,
+        )
+
+    # No backup dir created, no PUT
+    assert not backup_dir.exists()
+    mock_put.assert_not_called()
+
+
+def test_apply_diff_downgrade_allowed_proceeds(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mock_put = mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    diff = _nonempty_diff(
+        downgrades=(DowngradeFinding("x", True, False, "weakened"),),
+    )
+    backup_dir = tmp_path / "backups"
+
+    apply_protection_diff(
+        diff,
+        "yakkuro/gh-manage",
+        "main",
+        downgrade_allowed=True,
+        backup_dir=backup_dir,
+    )
+
+    # Backup created, PUT called
+    assert backup_dir.exists()
+    assert len(list(backup_dir.iterdir())) == 1
+    mock_put.assert_called_once()
+
+
+# Backup dir pre-flight
+def test_apply_diff_backup_dir_is_file_raises_backup_error(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mock_put = mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    # Create a regular file at the backup_dir path
+    backup_file = tmp_path / "backups"
+    backup_file.write_text("not a dir")
+
+    diff = _nonempty_diff()
+    with pytest.raises(ProtectionBackupError, match="not a directory"):
+        apply_protection_diff(
+            diff,
+            "yakkuro/gh-manage",
+            "main",
+            backup_dir=backup_file,
+        )
+    mock_put.assert_not_called()
+
+
+def test_apply_diff_backup_dir_created_automatically(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    backup_dir = tmp_path / "nested" / "backups"
+    assert not backup_dir.exists()
+
+    diff = _nonempty_diff()
+    apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+
+    assert backup_dir.is_dir()
+
+
+# Backup filename uniqueness (spec-critique CRITICAL #1)
+def test_apply_diff_backup_filename_includes_microseconds(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    backup_dir = tmp_path / "backups"
+
+    diff = _nonempty_diff()
+    apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+
+    files = list(backup_dir.iterdir())
+    assert len(files) == 1
+    # Pattern: yakkuro-gh-manage-YYYYMMDDTHHMMSS-microseconds.yml
+    assert re.match(r"^yakkuro-gh-manage-\d{8}T\d{6}-\d{6}\.yml$", files[0].name)
+
+
+def test_apply_diff_two_calls_same_second_produce_distinct_backups(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Regression guard for spec-critique CRITICAL #1: backup filename
+    must be unique across rapid retries within the same second."""
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    backup_dir = tmp_path / "backups"
+
+    diff = _nonempty_diff()
+    apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+    apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+
+    files = sorted(backup_dir.iterdir())
+    # Both backups must exist; the second must NOT overwrite the first
+    assert len(files) == 2
+    assert files[0].name != files[1].name
+
+
+# Backup content
+def test_apply_diff_backup_contains_yaml_dump_of_current_raw(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    import yaml
+
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    backup_dir = tmp_path / "backups"
+
+    current_raw = {
+        "enforce_admins": {"enabled": True},
+        "required_status_checks": {"strict": True, "contexts": ["x"]},
+    }
+    diff = ProtectionDiff(
+        changes=(ProtectionFieldChange("enforce_admins", True, False),),
+        downgrades=(),
+        current_raw=current_raw,
+        desired_raw={},
+    )
+    apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+
+    files = list(backup_dir.iterdir())
+    assert len(files) == 1
+    loaded = yaml.safe_load(files[0].read_text())
+    assert loaded == current_raw
+
+
+# Progress callback
+def test_apply_diff_progress_callback_invoked_in_order(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    backup_dir = tmp_path / "backups"
+
+    progress_calls: list[str] = []
+    diff = _nonempty_diff()
+    apply_protection_diff(
+        diff,
+        "yakkuro/gh-manage",
+        "main",
+        backup_dir=backup_dir,
+        progress=progress_calls.append,
+    )
+
+    assert len(progress_calls) == 2
+    assert "backup" in progress_calls[0]
+    assert "apply" in progress_calls[1]
