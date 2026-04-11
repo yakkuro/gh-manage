@@ -42,10 +42,27 @@ def _patch_labels(mocker: MockerFixture) -> None:
     )
 
 
+def _patch_protection_default(mocker: MockerFixture) -> None:
+    """Mock protection API for tests that drive a profile with
+    protection_policy set (e.g. python-service). Without this, init hits
+    the real `gh api` and fails in CI with GH_TOKEN unset."""
+    mocker.patch(
+        "gh_manage.commands.init.protection_api.get_branch_protection",
+        return_value={},
+    )
+    mocker.patch(
+        "gh_manage.commands.init.protection_sync.compute_protection_diff",
+        return_value=ProtectionDiff(
+            changes=(), downgrades=(), current_raw={}, desired_raw={}
+        ),
+    )
+
+
 # Happy path
 def test_init_dry_run_default(mocker: MockerFixture, tmp_path: Path) -> None:
     _patch_git(mocker)
     _patch_labels(mocker)
+    _patch_protection_default(mocker)
     mock_apply = mocker.patch("gh_manage.commands.init.profile_sync.apply_files_diff")
 
     runner = CliRunner()
@@ -64,6 +81,7 @@ def test_init_apply_writes_files_and_calls_labels_apply(
 ) -> None:
     _patch_git(mocker)
     _patch_labels(mocker)
+    _patch_protection_default(mocker)
     mock_files_apply = mocker.patch(
         "gh_manage.commands.init.profile_sync.apply_files_diff"
     )
