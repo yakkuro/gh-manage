@@ -25,13 +25,10 @@ from gh_manage.cli import main
 # Exact stub error messages keyed by subcommand. Kept in lockstep with
 # src/gh_manage/commands/*.py. If this map drifts from the real stubs, the
 # test fails — which is the point.
-# Note: init (Phase 6) and apply (Phase 6) are now implemented, so they are
-# removed from this map. The test below only runs for remaining stubs.
+# Note: init (Phase 6), apply (Phase 6), and protection (Phase 7) are now
+# implemented, so they are removed from this map. The test below only runs
+# for remaining stubs.
 STUB_ERROR_MESSAGES: dict[str, str] = {
-    "protection": (
-        "error: `gh manage protection` is not yet implemented — "
-        "scheduled for cli/v0.4.0 (Phase 7)."
-    ),
     "drift": (
         "error: `gh manage drift` is not yet implemented — "
         "scheduled for cli/v0.5.0 (Phase 8)."
@@ -69,7 +66,7 @@ def test_short_help_flag_shows_exact_prog_name() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["protection", "drift", "issues"],
+    ["drift", "issues"],
 )
 def test_stub_subcommand_exits_with_exact_phase_message(subcommand: str) -> None:
     """Each stub must print the EXACT error message from STUB_ERROR_MESSAGES.
@@ -99,7 +96,7 @@ def test_unknown_subcommand_exits_with_click_usage_error() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["protection", "drift", "issues"],
+    ["drift", "issues"],
 )
 def test_stub_subcommand_help_shows_help_without_firing_stub(subcommand: str) -> None:
     """`gh manage <stub> --help` must display the subcommand's help text
