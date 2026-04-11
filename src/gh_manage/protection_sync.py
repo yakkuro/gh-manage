@@ -576,10 +576,11 @@ def apply_protection_diff(
             ),
             encoding="utf-8",
         )
-    except OSError as e:
+    except (OSError, yaml.YAMLError) as e:
         raise ProtectionBackupError(
             f"Cannot write backup to {backup_path}: {e}. "
-            f"Check disk space and write permissions on {backup_dir}."
+            f"Check disk space and write permissions on {backup_dir}, "
+            f"or ensure the protection data is serializable."
         ) from e
 
     # Step 4: PUT — any failure propagates with backup preserved

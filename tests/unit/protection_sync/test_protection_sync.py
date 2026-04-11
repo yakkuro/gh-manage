@@ -392,6 +392,30 @@ def test_apply_diff_backup_contains_yaml_dump_of_current_raw(
     assert loaded == current_raw
 
 
+def test_apply_diff_yaml_error_raises_backup_error(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """yaml.YAMLError on backup write must surface as ProtectionBackupError
+    (not an uncaught traceback) so the CLI error handler can present an
+    actionable message and prevent the PUT from firing."""
+    import yaml
+
+    from gh_manage.protection_sync import apply_protection_diff
+
+    mock_put = mocker.patch("gh_manage.github_api.protection.put_branch_protection")
+    mocker.patch(
+        "gh_manage.protection_sync.yaml.safe_dump",
+        side_effect=yaml.YAMLError("cannot represent object"),
+    )
+    backup_dir = tmp_path / "backups"
+    diff = _nonempty_diff()
+
+    with pytest.raises(ProtectionBackupError, match="serializable"):
+        apply_protection_diff(diff, "yakkuro/gh-manage", "main", backup_dir=backup_dir)
+
+    mock_put.assert_not_called()
+
+
 # Progress callback
 def test_apply_diff_progress_callback_invoked_in_order(
     tmp_path: Path, mocker: MockerFixture
