@@ -27,7 +27,7 @@
 - [ ] `uv run mypy src/` clean(既存 yaml stub note 以外)
 - [ ] `uv run ruff check src/ tests/` clean
 - [ ] `uv run ruff format --check src/ tests/` clean
-- [ ] dogfood smoke test: gh-manage 自身の repo で `gh manage apply --profile python-service --dry-run` がクラッシュせず実行できる(差分が出ても OK)
+- [ ] dogfood smoke test: gh-manage 自身の repo で `gh manage apply --profile python-service --dry-run` がクラッシュせず実行できる(差分が出ても OK)。**この test は package data 経由で `python-service.yml` profile + templates を実際にロードする経路を end-to-end でカバーするので、`importlib.resources` → `Path` 変換境界の integration test を兼ねる**(ユニットテストは tmp_path fixture を使うため、この経路を mock している)
 
 ## Scope (master spec の Phase 6 から)
 
@@ -354,6 +354,18 @@ def apply_files_diff(
         written. Recovery via `git status` / `git checkout`. No rollback
         by design — the CLI is meant to be run inside a git repo.
 
+    TOCTOU defense-in-depth:
+      Although the path-escape check runs at compute_files_diff time,
+      apply_files_diff re-validates each `dest` immediately before
+      writing:
+          resolved = (target_root / entry.dest).resolve(strict=False)
+          if not resolved.is_relative_to(target_root.resolve()):
+              raise ProfilePathEscapeError(...)
+      This guards against a parent component becoming a symlink between
+      the compute and apply phases. In single-user CLI usage there is no
+      adversarial actor, but the cost of re-validation is one
+      `Path.resolve()` per file and the safety margin is worth it.
+
     `progress` is called with a one-line description before each write
     operation. CLI passes click.echo; tests pass list.append.
     """
@@ -415,6 +427,12 @@ class NotAGitRepoError(GitError):
 
 class NoOriginRemoteError(GitError):
     """git is set up but `origin` remote is not configured."""
+
+
+class UnsupportedOriginError(GitError):
+    """`origin` is set but URL is not a github.com remote (gitlab, bitbucket,
+    self-hosted, etc.). Wraps ValueError from parse_origin_url so callers
+    only need to catch GitError subclasses."""
 ```
 
 各エラーは actionable message を持つ:
@@ -468,21 +486,36 @@ def get_origin_owner_repo(target: Path) -> str:
     """Run `git remote get-url origin` in target and parse → 'owner/repo'.
 
     Raises:
-      GitNotInstalledError — git not on PATH
-      NotAGitRepoError     — target is not inside a git work tree
-      NoOriginRemoteError  — git is OK but `origin` is not set
-      GitError             — other git failures (catch-all)
+      GitNotInstalledError       — git not on PATH
+      NotAGitRepoError           — target is not inside a git work tree
+      NoOriginRemoteError        — git is OK but `origin` is not set
+      UnsupportedOriginError     — origin URL is not a github.com URL
+      GitError                   — other git failures (catch-all)
     """
 ```
 
-`get_origin_owner_repo` の内部:
-1. `subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"], ...)`
-2. `FileNotFoundError` → `GitNotInstalledError`
-3. `returncode != 0` を分類:
-   - stderr に "not a git repository" → `NotAGitRepoError`
-   - stderr に "No such remote" or "fatal: No such remote 'origin'" → `NoOriginRemoteError`
-   - その他 → `GitError`
-4. stdout を `parse_origin_url` に渡して owner/repo を得る
+`UnsupportedOriginError(GitError)` は `parse_origin_url` の `ValueError` を `get_origin_owner_repo` 内で wrap した型付きエラー。`_handle_errors` decorator が `GitError` を catch するので CLI は actionable message を表示できる。
+
+`get_origin_owner_repo` の内部(LOAD-BEARING — `ValueError` を露出させない):
+
+```python
+def get_origin_owner_repo(target: Path) -> str:
+    result = _run_git(["remote", "get-url", "origin"], cwd=target)
+    if result.returncode != 0:
+        stderr_lower = result.stderr.lower()
+        if "not a git repository" in stderr_lower:
+            raise NotAGitRepoError(f"Not a git repository: {target}. Run `git init` first.")
+        if "no such remote" in stderr_lower:
+            raise NoOriginRemoteError("No `origin` remote configured. ...")
+        raise GitError(f"git remote get-url origin failed: {result.stderr.strip()}")
+    url = result.stdout.strip()
+    try:
+        return parse_origin_url(url)
+    except ValueError as e:
+        raise UnsupportedOriginError(str(e)) from e
+```
+
+`FileNotFoundError`(git not on PATH)は `_run_git` の中で `GitNotInstalledError` に変換する。
 
 ## CLI commands
 
@@ -651,7 +684,8 @@ templates_root: Path = Path(str(templates_traversable))
 `subprocess.run` を mock するパターンは `tests/unit/github_client/test_github_client.py` を踏襲。
 
 - `parse_origin_url`: git@ form / https form / https with .git / https without .git / malformed → ValueError(5 cases)
-- `parse_origin_url`: gitlab.com URL → ValueError with "github.com" in message
+- `parse_origin_url`(pure parser): gitlab.com URL → ValueError with "github.com" in message
+- `get_origin_owner_repo`(wrapper): gitlab.com URL → UnsupportedOriginError(GitError) — confirms ValueError is wrapped, not exposed
 - `get_origin_owner_repo`:
   - 成功: stdout に valid URL → owner/repo を返す
   - subprocess returncode != 0 + stderr "not a git repository" → NotAGitRepoError
@@ -712,7 +746,7 @@ templates_root: Path = Path(str(templates_traversable))
 - profile filename と `name` field の不一致 → ConfigError → exit 1
 - not a git repo → NotAGitRepoError → exit 1、actionable msg
 - no origin remote → NoOriginRemoteError → exit 1、actionable msg
-- gitlab.com origin URL → GitError → exit 1、"github.com" を含むメッセージ
+- gitlab.com origin URL → UnsupportedOriginError(GitError) → exit 1、"github.com" を含むメッセージ
 - `gh auth` 未認証(`labels_api.list_labels` が `GhAuthError` を raise) → exit 1、"gh auth login" を含むメッセージ
 - --apply + --dry-run → exit 2(UsageError)
 - "Next steps" メッセージが --apply 後に表示される
