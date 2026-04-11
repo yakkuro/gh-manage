@@ -428,3 +428,71 @@ def test_apply_files_diff_conflict_check_is_atomic(tmp_path: Path) -> None:
     assert not (target / "create.yml").exists()
     # The Overwrite target must be untouched
     assert (target / "overwrite.yml").read_text() == "old\n"
+
+
+# OSError wrapping (silent-failure-hunter findings + Codex MEDIUM #2)
+def test_compute_files_diff_dest_is_directory_raises_io_error(
+    tmp_path: Path,
+) -> None:
+    """If the dest path exists but is a DIRECTORY (not a regular file),
+    we must raise ProfileIOError with an actionable message — not let
+    IsADirectoryError propagate as a raw traceback. Codex review #2."""
+    from gh_manage.profile_sync import ProfileIOError
+
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "x\n")
+    # Create a directory at the dest path (not a file)
+    (target / "ci.yml").mkdir()
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest="ci.yml"))
+    with pytest.raises(ProfileIOError, match="not a regular file"):
+        compute_files_diff(profile, target, templates)
+
+
+def test_compute_files_diff_unreadable_source_wraps_oserror(
+    tmp_path: Path,
+) -> None:
+    """If the source template can't be read (e.g., permission denied),
+    raise ProfileIOError with context — not a raw OSError traceback.
+    silent-failure-hunter CRITICAL #2."""
+    from gh_manage.profile_sync import ProfileIOError
+
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "x\n")
+    # Make the file unreadable (chmod 000)
+    (templates / "ci.yml").chmod(0o000)
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest="ci.yml"))
+    try:
+        with pytest.raises(ProfileIOError, match="Cannot read template"):
+            compute_files_diff(profile, target, templates)
+    finally:
+        (templates / "ci.yml").chmod(0o644)  # restore for cleanup
+
+
+def test_apply_files_diff_unwritable_target_wraps_oserror(
+    tmp_path: Path,
+) -> None:
+    """If apply_files_diff can't write to dest (e.g., parent is read-only),
+    raise ProfileIOError with context. silent-failure-hunter CRITICAL #1
+    + HIGH #3."""
+    from gh_manage.profile_sync import ProfileIOError
+
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "x\n")
+    # Make target read-only so write_bytes fails
+    target.chmod(0o555)
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest="ci.yml"))
+    diff = compute_files_diff(profile, target, templates)
+    try:
+        with pytest.raises(ProfileIOError):
+            apply_files_diff(diff, target, templates)
+    finally:
+        target.chmod(0o755)  # restore for cleanup

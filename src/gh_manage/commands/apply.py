@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -36,18 +37,47 @@ def _handle_errors(func: _F) -> _F:
     return wrapper  # type: ignore[return-value]
 
 
+_VALID_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _resolve_profile_path(name: str) -> Path:
     """Resolve a profile name to a package-data Path.
 
-    Raises ConfigError if the profile YAML doesn't exist.
-    """
-    candidate = Path(str(files("gh_manage.data.profiles") / f"{name}.yml"))
-    if not candidate.is_file():
-        from gh_manage.config import ConfigFileNotFoundError
+    Profile names are bundle identifiers, NOT user paths. They MUST be a
+    single segment matching `[A-Za-z0-9][A-Za-z0-9._-]*` — anything else
+    (slashes, `..`, leading dot, empty) is rejected to prevent reading
+    arbitrary YAML files outside the bundled profiles directory.
 
+    After resolution the candidate path is re-checked against the profiles
+    root with `Path.resolve() + is_relative_to()` as a defense-in-depth
+    layer.
+
+    Raises ConfigError if the name is invalid or the profile YAML doesn't
+    exist.
+    """
+    from gh_manage.config import ConfigFileNotFoundError
+
+    if not name or not _VALID_PROFILE_NAME_RE.match(name):
+        raise ConfigFileNotFoundError(
+            f"Invalid profile name: {name!r}. Profile names must be a single "
+            f"identifier (alphanumeric plus `._-`, not starting with `.`). "
+            f"Path separators and `..` are not allowed."
+        )
+
+    profiles_root = Path(str(files("gh_manage.data.profiles"))).resolve()
+    candidate = (profiles_root / f"{name}.yml").resolve()
+
+    if not candidate.is_relative_to(profiles_root):
+        raise ConfigFileNotFoundError(
+            f"Profile path resolved outside the bundled profiles directory: "
+            f"{name!r} → {candidate}. This should not happen with a valid "
+            f"profile name; if it does, it indicates a packaging bug."
+        )
+
+    if not candidate.is_file():
         raise ConfigFileNotFoundError(
             f"Profile not found: {name!r}. "
-            f"Looked in {candidate.parent}. "
+            f"Looked in {profiles_root}. "
             f"Available profiles can be listed with `gh manage profiles list` "
             f"(not yet implemented)."
         )

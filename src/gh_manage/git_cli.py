@@ -134,6 +134,12 @@ def get_origin_owner_repo(target: Path) -> str:
     if result.returncode != 0:
         _raise_classified_git_error(stderr=result.stderr, returncode=result.returncode)
     url = result.stdout.strip()
+    if not url:
+        raise NoOriginRemoteError(
+            "The `origin` remote exists but has an empty URL. "
+            "Run `git remote set-url origin git@github.com:OWNER/REPO.git` "
+            "and try again."
+        )
     try:
         return parse_origin_url(url)
     except ValueError as e:

@@ -140,6 +140,20 @@ def test_unsupported_origin_error_is_a_git_error_subclass() -> None:
     assert isinstance(err, GitError)
 
 
+def test_get_origin_owner_repo_empty_url_raises_no_origin_remote(
+    mocker: MockerFixture,
+) -> None:
+    """If `git remote get-url origin` exits 0 with empty stdout (origin
+    is set but its URL is empty/whitespace), raise NoOriginRemoteError
+    with an actionable message — NOT pass the empty string to
+    parse_origin_url where it would become a confusing
+    'Unsupported git remote URL: \\'\\'' error.
+    silent-failure-hunter HIGH #4."""
+    _mock_git_success(mocker, "   \n")
+    with pytest.raises(NoOriginRemoteError, match="empty URL"):
+        get_origin_owner_repo(Path("/tmp/fake"))
+
+
 # Locale enforcement — LOAD-BEARING
 def test_get_origin_owner_repo_uses_lc_all_c(mocker: MockerFixture) -> None:
     """Subprocess invocation must include LC_ALL=C in env so stderr

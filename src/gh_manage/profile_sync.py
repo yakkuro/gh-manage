@@ -105,6 +105,13 @@ class ProfileConflictError(ProfileError):
         )
 
 
+class ProfileIOError(ProfileError):
+    """Raised when a filesystem read/write fails inside compute_files_diff
+    or apply_files_diff. Wraps the underlying OSError so callers (commands/
+    _handle_errors) can present an actionable message instead of a raw
+    Python traceback."""
+
+
 def compute_files_diff(
     profile: ProfileSpec,
     target_root: Path,
@@ -159,13 +166,33 @@ def compute_files_diff(
                 f"Check the profile YAML against the templates directory."
             )
 
-        source_bytes = source_abs.read_bytes()
+        try:
+            source_bytes = source_abs.read_bytes()
+        except OSError as e:
+            raise ProfileIOError(
+                f"Cannot read template {entry.source!r} from "
+                f"{templates_root_resolved}: {e}. "
+                f"Check filesystem permissions and that the file is readable."
+            ) from e
 
         if not dest_abs.exists():
             creates.append(FileCreate(source=source_abs, dest=dest_abs))
             continue
 
-        dest_bytes = dest_abs.read_bytes()
+        if not dest_abs.is_file():
+            raise ProfileIOError(
+                f"Existing dest path is not a regular file: {dest_abs} "
+                f"(it may be a directory or special file). "
+                f"Remove or rename it before re-running gh-manage."
+            )
+
+        try:
+            dest_bytes = dest_abs.read_bytes()
+        except OSError as e:
+            raise ProfileIOError(
+                f"Cannot read existing target file {dest_abs} for diff: {e}. "
+                f"Check filesystem permissions."
+            ) from e
         if source_bytes == dest_bytes:
             noops.append(FileNoop(dest=dest_abs))
             continue
@@ -229,8 +256,20 @@ def apply_files_diff(
                 f"Path escape detected at write time: {dest} resolves to "
                 f"{resolved} outside {target_root_resolved}."
             )
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(source.read_bytes())
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise ProfileIOError(
+                f"Cannot create parent directory for {dest}: {e}. "
+                f"Check write permissions on the target directory."
+            ) from e
+        try:
+            dest.write_bytes(source.read_bytes())
+        except OSError as e:
+            raise ProfileIOError(
+                f"Cannot write {dest}: {e}. "
+                f"Check filesystem permissions and free disk space."
+            ) from e
 
     for create in diff.creates:
         progress(f"+ create   {create.dest}")

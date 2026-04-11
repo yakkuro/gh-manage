@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from click.testing import CliRunner
+import pytest
 from pytest_mock import MockerFixture
 
 from gh_manage.cli import main
@@ -179,3 +180,34 @@ def test_init_unknown_profile(mocker: MockerFixture, tmp_path: Path) -> None:
         "nonexistent-profile-xyz" in result.output
         or "not found" in result.output.lower()
     )
+
+
+# Profile-name security validation (Codex review #1)
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "../../etc/passwd",
+        "..",
+        "../python-service",
+        "subdir/python-service",
+        "subdir\\python-service",
+        ".hidden",
+        "",
+    ],
+)
+def test_init_profile_name_path_traversal_rejected(
+    mocker: MockerFixture, tmp_path: Path, bad_name: str
+) -> None:
+    """A `--profile` value containing `/`, `..`, or starting with `.` must
+    be rejected as an invalid identifier — NOT used to read arbitrary
+    YAML files outside src/gh_manage/data/profiles/. Defense against
+    Codex review finding #1 (Phase 6 PR)."""
+    _patch_git(mocker)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", bad_name],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 1
+    assert "Invalid profile name" in result.output or "not allowed" in result.output
