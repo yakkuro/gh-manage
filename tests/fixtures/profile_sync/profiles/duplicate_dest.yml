@@ -1,0 +1,7 @@
+version: 1
+name: dup
+files:
+  - source: a.yml
+    dest: x.yml
+  - source: b.yml
+    dest: x.yml

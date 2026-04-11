@@ -1,0 +1,9 @@
+version: 1
+name: basic
+description: "Test profile for golden file tests"
+files:
+  - source: ci/test-ci.yml
+    dest: .github/workflows/ci.yml
+  - source: claude-md/test.md
+    dest: CLAUDE.md
+    skip_if_exists: true
