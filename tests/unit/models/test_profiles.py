@@ -117,3 +117,34 @@ def test_load_config_duplicate_dest_yml_raises() -> None:
 
     with pytest.raises(ConfigValidationError, match="Duplicate dest"):
         load_config(FIXTURES / "duplicate_dest.yml", ProfileSpec)
+
+
+# Phase 7 extension: protection_policy + required_contexts
+def test_profile_spec_protection_policy_defaults_to_none() -> None:
+    p = ProfileSpec(version=1, name="test", files=[])
+    assert p.protection_policy is None
+
+
+def test_profile_spec_protection_policy_set() -> None:
+    p = ProfileSpec(
+        version=1,
+        name="test",
+        files=[],
+        protection_policy="solo-default",
+    )
+    assert p.protection_policy == "solo-default"
+
+
+def test_profile_spec_required_contexts_defaults_to_empty_list() -> None:
+    p = ProfileSpec(version=1, name="test", files=[])
+    assert p.required_contexts == []
+
+
+def test_profile_spec_required_contexts_set() -> None:
+    p = ProfileSpec(
+        version=1,
+        name="test",
+        files=[],
+        required_contexts=["pr-gate / test", "ci-review / gitleaks"],
+    )
+    assert p.required_contexts == ["pr-gate / test", "ci-review / gitleaks"]
