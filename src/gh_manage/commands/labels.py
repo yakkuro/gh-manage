@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import sys
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -18,7 +19,7 @@ from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.repo_ref import parse_repo
 
-DEFAULT_CONFIG_PATH = Path("config/labels.yml")
+DEFAULT_CONFIG_PATH = Path(str(files("gh_manage.data") / "labels.yml"))
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -62,14 +63,14 @@ def _handle_errors(func: _F) -> _F:
     return wrapper  # type: ignore[return-value]
 
 
-@click.group(help="Synchronize GitHub repo labels against config/labels.yml.")
+@click.group(help="Synchronize GitHub repo labels against the bundled labels.yml.")
 def labels() -> None:
     """Entry group for labels subcommands."""
 
 
 @labels.command(
     help=(
-        "Apply config/labels.yml to a repo. Default is dry-run; "
+        "Apply the bundled labels.yml to a repo. Default is dry-run; "
         "pass --apply to execute."
     ),
 )
@@ -134,7 +135,7 @@ def sync(
 @labels.command(
     "diff",
     help=(
-        "Show diff between config/labels.yml and a repo. "
+        "Show diff between the bundled labels.yml and a repo. "
         "Exit 0 if no diff, 1 if diff present (git diff --quiet style)."
     ),
 )
