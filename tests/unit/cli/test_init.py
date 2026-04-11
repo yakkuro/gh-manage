@@ -16,6 +16,11 @@ from gh_manage.git_cli import (
 )
 from gh_manage.github_client import GhAuthError
 from gh_manage.labels_sync import LabelsDiff
+from gh_manage.protection_sync import (
+    DowngradeFinding,
+    ProtectionDiff,
+    ProtectionFieldChange,
+)
 
 
 def _empty_labels_diff() -> LabelsDiff:
@@ -37,10 +42,27 @@ def _patch_labels(mocker: MockerFixture) -> None:
     )
 
 
+def _patch_protection_default(mocker: MockerFixture) -> None:
+    """Mock protection API for tests that drive a profile with
+    protection_policy set (e.g. python-service). Without this, init hits
+    the real `gh api` and fails in CI with GH_TOKEN unset."""
+    mocker.patch(
+        "gh_manage.commands.init.protection_api.get_branch_protection",
+        return_value={},
+    )
+    mocker.patch(
+        "gh_manage.commands.init.protection_sync.compute_protection_diff",
+        return_value=ProtectionDiff(
+            changes=(), downgrades=(), current_raw={}, desired_raw={}
+        ),
+    )
+
+
 # Happy path
 def test_init_dry_run_default(mocker: MockerFixture, tmp_path: Path) -> None:
     _patch_git(mocker)
     _patch_labels(mocker)
+    _patch_protection_default(mocker)
     mock_apply = mocker.patch("gh_manage.commands.init.profile_sync.apply_files_diff")
 
     runner = CliRunner()
@@ -59,6 +81,7 @@ def test_init_apply_writes_files_and_calls_labels_apply(
 ) -> None:
     _patch_git(mocker)
     _patch_labels(mocker)
+    _patch_protection_default(mocker)
     mock_files_apply = mocker.patch(
         "gh_manage.commands.init.profile_sync.apply_files_diff"
     )
@@ -211,3 +234,148 @@ def test_init_profile_name_path_traversal_rejected(
     )
     assert result.exit_code == 1
     assert "Invalid profile name" in result.output or "not allowed" in result.output
+
+
+# Phase 7: Branch protection in init
+
+
+def _empty_protection_diff() -> ProtectionDiff:
+    return ProtectionDiff(changes=(), downgrades=(), current_raw={}, desired_raw={})
+
+
+def _nonempty_protection_diff(downgrades: tuple = ()) -> ProtectionDiff:
+    return ProtectionDiff(
+        changes=(ProtectionFieldChange("enforce_admins", False, True),),
+        downgrades=downgrades,
+        current_raw={},
+        desired_raw={"enforce_admins": True, "restrictions": None},
+    )
+
+
+def _patch_protection(mocker: MockerFixture, diff: ProtectionDiff) -> None:
+    mocker.patch(
+        "gh_manage.commands.init.protection_api.get_branch_protection",
+        return_value={},
+    )
+    mocker.patch(
+        "gh_manage.commands.init.protection_sync.compute_protection_diff",
+        return_value=diff,
+    )
+
+
+def test_init_applies_protection_when_profile_has_policy(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection(mocker, _nonempty_protection_diff())
+    mocker.patch("gh_manage.commands.init.profile_sync.apply_files_diff")
+    mock_protection_apply = mocker.patch(
+        "gh_manage.commands.init.protection_sync.apply_protection_diff"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0, result.output
+    mock_protection_apply.assert_called_once()
+
+
+def test_init_skips_protection_when_profile_has_none(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    mock_get_protection = mocker.patch(
+        "gh_manage.commands.init.protection_api.get_branch_protection"
+    )
+    # Mock load_config so the profile has protection_policy=None
+    from gh_manage.models.profiles import ProfileSpec
+    from gh_manage.models.labels import LabelsConfig, CategorySpec, LabelSpec
+
+    def _fake_load_config(path, model_cls):
+        if model_cls is ProfileSpec:
+            return ProfileSpec(
+                version=1,
+                name="python-service",
+                files=[],
+                protection_policy=None,
+            )
+        if model_cls is LabelsConfig:
+            return LabelsConfig(
+                version=1,
+                categories={
+                    "t": CategorySpec(
+                        description="t",
+                        labels=[LabelSpec(name="test", color="000000")],
+                    )
+                },
+            )
+        return mocker.DEFAULT
+
+    mocker.patch("gh_manage.commands.init.load_config", side_effect=_fake_load_config)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0, result.output
+    mock_get_protection.assert_not_called()
+
+
+def test_init_protection_dry_run_prints_diff(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection(mocker, _nonempty_protection_diff())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Branch protection" in result.output or "enforce_admins" in result.output
+
+
+def test_init_stops_on_protection_downgrade(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection(
+        mocker,
+        _nonempty_protection_diff(
+            downgrades=(DowngradeFinding("enforce_admins", True, False, "weakened"),),
+        ),
+    )
+    mock_files_apply = mocker.patch(
+        "gh_manage.commands.init.profile_sync.apply_files_diff"
+    )
+    mock_labels_apply = mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
+    mock_protection_apply = mocker.patch(
+        "gh_manage.commands.init.protection_sync.apply_protection_diff"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 1
+    assert "downgrade" in result.output.lower()
+    assert "protection sync" in result.output  # actionable redirect
+    # Downgrade must abort BEFORE any side effect. Otherwise the repo
+    # ends up in a partial-apply state with files and labels already
+    # written but protection untouched.
+    mock_files_apply.assert_not_called()
+    mock_labels_apply.assert_not_called()
+    mock_protection_apply.assert_not_called()

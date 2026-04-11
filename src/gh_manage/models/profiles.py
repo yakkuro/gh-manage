@@ -46,6 +46,9 @@ class ProfileSpec(BaseModel):
     name: str
     description: str | None = None
     files: list[FileEntry]
+    # Phase 7 additions:
+    protection_policy: str | None = None
+    required_contexts: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_unique_dest(self) -> ProfileSpec:

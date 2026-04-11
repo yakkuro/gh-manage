@@ -11,27 +11,30 @@ from typing import Any, TypeVar
 
 import click
 
-from gh_manage import git_cli, labels_sync, profile_sync
+from gh_manage import git_cli, labels_sync, profile_sync, protection_sync
 from gh_manage.config import ConfigError, load_config
 from gh_manage.git_cli import GitError
 from gh_manage.github_api import labels as labels_api
-from gh_manage.github_client import GhError
+from gh_manage.github_api import protection as protection_api
+from gh_manage.github_client import GhError, GhNotFoundError
+from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
 from gh_manage.profile_sync import ProfileError, ProfileFilesDiff
+from gh_manage.protection_sync import ProtectionError
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def _handle_errors(func: _F) -> _F:
-    """Decorator: catch GhError / ConfigError / GitError / ProfileError
+    """Decorator: catch GhError / ConfigError / GitError / ProfileError / ProtectionError
     and re-raise as click.ClickException (exit 1 with `Error: <msg>`)."""
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except (GhError, ConfigError, GitError, ProfileError) as e:
+        except (GhError, ConfigError, GitError, ProfileError, ProtectionError) as e:
             raise click.ClickException(str(e)) from e
 
     return wrapper  # type: ignore[return-value]
@@ -91,6 +94,14 @@ def _resolve_templates_root() -> Path:
 
 def _resolve_default_labels_path() -> Path:
     return Path(str(files("gh_manage.data") / "labels.yml"))
+
+
+def _resolve_branch_protection_path() -> Path:
+    return Path(str(files("gh_manage.data") / "branch-protection.yml"))
+
+
+def _resolve_backup_dir() -> Path:
+    return Path.home() / ".gh-manage" / "backups"
 
 
 def _format_files_diff(diff: ProfileFilesDiff) -> str:
@@ -178,6 +189,31 @@ def init(
     current_labels = labels_api.list_labels(owner_repo)
     labels_diff = labels_sync.compute_diff(current_labels, labels_config)
 
+    # Protection: computed only when profile has a policy (Phase 7)
+    protection_diff = None
+    if profile.protection_policy is not None:
+        bp_config = load_config(
+            _resolve_branch_protection_path(), BranchProtectionConfig
+        )
+        if profile.protection_policy not in bp_config.policies:
+            from gh_manage.protection_sync import ProtectionPolicyNotFoundError
+
+            raise ProtectionPolicyNotFoundError(
+                f"Policy {profile.protection_policy!r} not found in "
+                f"branch-protection.yml. Available policies: "
+                f"{sorted(bp_config.policies.keys())}."
+            )
+        policy = bp_config.policies[profile.protection_policy]
+        try:
+            current_protection = protection_api.get_branch_protection(
+                owner_repo, "main"
+            )
+        except GhNotFoundError:
+            current_protection = {}
+        protection_diff = protection_sync.compute_protection_diff(
+            current_protection, policy, profile, "main"
+        )
+
     # Print combined diff
     click.echo(_format_files_diff(files_diff))
     click.echo("")
@@ -193,13 +229,42 @@ def init(
         for update in labels_diff.updates:
             click.echo(f"  ~ {update.label.name}  (color/desc update)")
 
+    if protection_diff is not None:
+        click.echo("")
+        click.echo(
+            f"Branch protection (main): {len(protection_diff.changes)} change(s)"
+        )
+        for change in protection_diff.changes:
+            click.echo(
+                f"  {change.field_path}: {change.current_value} → {change.desired_value}"
+            )
+
     if not apply_flag:
+        n_protection = len(protection_diff.changes) if protection_diff else 0
         click.echo(
             f"\nDry-run: {len(files_diff.creates) + len(files_diff.overwrites)} "
-            f"file changes, {labels_diff.total_changes} label changes. "
+            f"file changes, {labels_diff.total_changes} label changes, "
+            f"{n_protection} protection changes. "
             f"Re-run with --apply to execute."
         )
         return
+
+    # Pre-apply validation: fail fast on protection downgrade BEFORE any
+    # side-effect (files, labels, protection). Otherwise an aborting
+    # downgrade would leave the repo in a partial-apply state with files
+    # and labels already written.
+    if (
+        protection_diff is not None
+        and not protection_diff.is_empty
+        and protection_diff.has_downgrades
+    ):
+        raise click.ClickException(
+            f"Protection downgrade detected during init. "
+            f"init does not force-downgrade protection. "
+            f"Run `gh manage protection sync {owner_repo} --profile "
+            f"{profile_name} --downgrade-allowed --apply --yes` "
+            f"explicitly to override, then re-run init."
+        )
 
     # Apply
     click.echo("")
@@ -207,6 +272,18 @@ def init(
         files_diff, target, templates_root, force=force, progress=click.echo
     )
     labels_sync.apply_diff(labels_diff, owner_repo, progress=click.echo)
+
+    if protection_diff is not None and not protection_diff.is_empty:
+        backup_dir = _resolve_backup_dir()
+        protection_sync.apply_protection_diff(
+            protection_diff,
+            owner_repo,
+            "main",
+            downgrade_allowed=False,
+            backup_dir=backup_dir,
+            progress=click.echo,
+        )
+
     click.echo("\nDone. Next steps:")
     click.echo("  git status                # review what gh-manage placed")
     click.echo("  git add <gh-manage paths> # stage only the new files")
