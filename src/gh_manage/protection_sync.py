@@ -190,9 +190,178 @@ def build_desired_protection(
 def detect_downgrade(
     current: dict[str, Any], desired: dict[str, Any]
 ) -> tuple[DowngradeFinding, ...]:
-    """Check the 13 downgrade rules.
-    Implementation in Task 6."""
-    raise NotImplementedError("Task 6")
+    """Check the 13 downgrade rules. Both inputs MUST be canonical shape
+    (output of normalize_protection_response). Raw GitHub API responses
+    must not be passed directly.
+
+    Returns empty tuple if desired is equal or stronger than current for
+    every rule. Otherwise returns a DowngradeFinding per detected downgrade.
+    """
+    findings: list[DowngradeFinding] = []
+
+    # Rule 4: required_pull_request_reviews exist → null (wrapper drop)
+    curr_rpr = current.get("required_pull_request_reviews")
+    desi_rpr = desired.get("required_pull_request_reviews")
+    if curr_rpr is not None and desi_rpr is None:
+        findings.append(
+            DowngradeFinding(
+                field_path="required_pull_request_reviews",
+                current_value=curr_rpr,
+                desired_value=None,
+                reason="pull request review requirements removed entirely",
+            )
+        )
+    # Rules 1, 2, 3 only apply when BOTH current and desired have the wrapper
+    if curr_rpr is not None and desi_rpr is not None:
+        # Rule 1: required_approving_review_count decrease
+        cc = curr_rpr.get("required_approving_review_count", 0)
+        dc = desi_rpr.get("required_approving_review_count", 0)
+        if dc < cc:
+            findings.append(
+                DowngradeFinding(
+                    field_path="required_pull_request_reviews.required_approving_review_count",
+                    current_value=cc,
+                    desired_value=dc,
+                    reason=f"approving review count decreased {cc} → {dc}",
+                )
+            )
+        # Rule 2: dismiss_stale_reviews true → false
+        if (
+            curr_rpr.get("dismiss_stale_reviews") is True
+            and desi_rpr.get("dismiss_stale_reviews") is False
+        ):
+            findings.append(
+                DowngradeFinding(
+                    field_path="required_pull_request_reviews.dismiss_stale_reviews",
+                    current_value=True,
+                    desired_value=False,
+                    reason="stale review dismissal disabled",
+                )
+            )
+        # Rule 3: require_code_owner_reviews true → false
+        if (
+            curr_rpr.get("require_code_owner_reviews") is True
+            and desi_rpr.get("require_code_owner_reviews") is False
+        ):
+            findings.append(
+                DowngradeFinding(
+                    field_path="required_pull_request_reviews.require_code_owner_reviews",
+                    current_value=True,
+                    desired_value=False,
+                    reason="code owner review requirement disabled",
+                )
+            )
+
+    # Rule 5: enforce_admins true → false
+    if current.get("enforce_admins") is True and desired.get("enforce_admins") is False:
+        findings.append(
+            DowngradeFinding(
+                field_path="enforce_admins",
+                current_value=True,
+                desired_value=False,
+                reason="admin enforcement disabled",
+            )
+        )
+
+    # Rule 8: required_status_checks exist → null
+    curr_rsc = current.get("required_status_checks")
+    desi_rsc = desired.get("required_status_checks")
+    if curr_rsc is not None and desi_rsc is None:
+        findings.append(
+            DowngradeFinding(
+                field_path="required_status_checks",
+                current_value=curr_rsc,
+                desired_value=None,
+                reason="status check requirements removed entirely",
+            )
+        )
+    # Rules 6, 7 only apply when BOTH current and desired have the wrapper
+    if curr_rsc is not None and desi_rsc is not None:
+        # Rule 6: strict true → false
+        if curr_rsc.get("strict") is True and desi_rsc.get("strict") is False:
+            findings.append(
+                DowngradeFinding(
+                    field_path="required_status_checks.strict",
+                    current_value=True,
+                    desired_value=False,
+                    reason="strict update requirement disabled",
+                )
+            )
+        # Rule 7: contexts set difference
+        curr_contexts = set(curr_rsc.get("contexts", []))
+        desi_contexts = set(desi_rsc.get("contexts", []))
+        removed = curr_contexts - desi_contexts
+        if removed:
+            findings.append(
+                DowngradeFinding(
+                    field_path="required_status_checks.contexts",
+                    current_value=sorted(curr_contexts),
+                    desired_value=sorted(desi_contexts),
+                    reason=f"required status checks removed: {sorted(removed)}",
+                )
+            )
+
+    # Rule 9: required_conversation_resolution true → false
+    if (
+        current.get("required_conversation_resolution") is True
+        and desired.get("required_conversation_resolution") is False
+    ):
+        findings.append(
+            DowngradeFinding(
+                field_path="required_conversation_resolution",
+                current_value=True,
+                desired_value=False,
+                reason="conversation resolution requirement disabled",
+            )
+        )
+
+    # Rule 10: required_linear_history true → false
+    if (
+        current.get("required_linear_history") is True
+        and desired.get("required_linear_history") is False
+    ):
+        findings.append(
+            DowngradeFinding(
+                field_path="required_linear_history",
+                current_value=True,
+                desired_value=False,
+                reason="linear history requirement disabled",
+            )
+        )
+
+    # Rule 11: allow_force_pushes false → true
+    if (
+        current.get("allow_force_pushes") is False
+        and desired.get("allow_force_pushes") is True
+    ):
+        findings.append(
+            DowngradeFinding(
+                field_path="allow_force_pushes",
+                current_value=False,
+                desired_value=True,
+                reason="force push now allowed",
+            )
+        )
+
+    # Rule 12: allow_deletions false → true
+    if (
+        current.get("allow_deletions") is False
+        and desired.get("allow_deletions") is True
+    ):
+        findings.append(
+            DowngradeFinding(
+                field_path="allow_deletions",
+                current_value=False,
+                desired_value=True,
+                reason="branch deletion now allowed",
+            )
+        )
+
+    # Rule 13: target_branches is handled at a higher layer (the caller
+    # applies the policy per-branch). Phase 7 MVP only handles "main", so
+    # this rule is dormant but documented here for future phases.
+
+    return tuple(findings)
 
 
 def compute_protection_diff(
