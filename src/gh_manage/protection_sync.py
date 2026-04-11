@@ -467,7 +467,13 @@ def compute_protection_diff(
                         desired_value=desi_rsc.get("strict"),
                     )
                 )
-            if curr_rsc.get("contexts") != desi_rsc.get("contexts"):
+            # Compare contexts as a set: GitHub returns them in an
+            # arbitrary order and order carries no semantic meaning.
+            # Without this, a reorder would surface as a drift and cause
+            # sync --apply to PUT unnecessarily.
+            curr_contexts = set(curr_rsc.get("contexts") or [])
+            desi_contexts = set(desi_rsc.get("contexts") or [])
+            if curr_contexts != desi_contexts:
                 changes.append(
                     ProtectionFieldChange(
                         field_path="required_status_checks.contexts",
@@ -516,6 +522,26 @@ def compute_protection_diff(
     )
 
 
+def _build_restore_body(current_raw: dict[str, Any]) -> dict[str, Any]:
+    """Build a PUT-compatible body from a GET /branches/{branch}/protection
+    response. Used by apply_protection_diff to ensure the backup file can
+    actually be restored via `gh api -X PUT ... --input <backup-file>`.
+
+    GitHub's GET wraps booleans as {enabled: bool, url: ...} objects and
+    omits the `restrictions` key when no user/team restrictions are set,
+    but the PUT endpoint requires flat booleans and a `restrictions: null`
+    (or object). Calling normalize_protection_response first gives us the
+    canonical flat shape; adding `restrictions: None` makes it PUT-ready.
+
+    Limitation: fields we don't track in the canonical schema (e.g.,
+    required_signatures, block_creations, lock_branch) are NOT preserved
+    in the backup. Phase 7 MVP only covers the 7 fields listed in the
+    design spec.
+    """
+    normalized = normalize_protection_response(current_raw)
+    return {**normalized, "restrictions": None}
+
+
 def apply_protection_diff(
     diff: ProtectionDiff,
     repo: str,
@@ -533,10 +559,12 @@ def apply_protection_diff(
       2. Pre-flight check backup_dir: if exists but not a directory,
          raise ProtectionBackupError. Otherwise mkdir(parents, exist_ok).
       3. Compute microsecond-unique backup filename, write YAML dump
-         of diff.current_raw. Failure → ProtectionBackupError, no PUT.
+         of _build_restore_body(diff.current_raw) — a PUT-compatible
+         body so manual restore via `gh api -X PUT ... --input <backup>`
+         actually works. Failure → ProtectionBackupError, no PUT.
       4. PUT the desired body via github_api.protection.put_branch_protection.
       5. If PUT fails, propagate the GhError — backup remains on disk
-         for manual restore via `gh api ... --input <backup-file>`.
+         for manual restore.
 
     progress() is called twice: once before backup, once before PUT.
     """
@@ -566,9 +594,10 @@ def apply_protection_diff(
 
     progress(f"backup → {backup_path}")
     try:
+        restore_body = _build_restore_body(diff.current_raw)
         backup_path.write_text(
             yaml.safe_dump(
-                diff.current_raw,
+                restore_body,
                 default_flow_style=False,
                 sort_keys=True,
                 allow_unicode=True,

@@ -221,7 +221,13 @@ def test_apply_also_protection_downgrade_redirects_to_protection_sync(
             downgrades=(DowngradeFinding("enforce_admins", True, False, "weakened"),),
         ),
     )
-    mocker.patch("gh_manage.commands.apply.profile_sync.apply_files_diff")
+    mock_files_apply = mocker.patch(
+        "gh_manage.commands.apply.profile_sync.apply_files_diff"
+    )
+    mock_labels_apply = mocker.patch("gh_manage.commands.apply.labels_sync.apply_diff")
+    mock_protection_apply = mocker.patch(
+        "gh_manage.commands.apply.protection_sync.apply_protection_diff"
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -239,3 +245,9 @@ def test_apply_also_protection_downgrade_redirects_to_protection_sync(
     assert result.exit_code == 1
     assert "downgrade" in result.output.lower()
     assert "protection sync" in result.output
+    # Downgrade must abort BEFORE any side effect. Otherwise the repo
+    # ends up in a partial-apply state with files already written but
+    # protection untouched.
+    mock_files_apply.assert_not_called()
+    mock_labels_apply.assert_not_called()
+    mock_protection_apply.assert_not_called()

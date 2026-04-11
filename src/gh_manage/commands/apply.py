@@ -249,6 +249,23 @@ def apply(
         )
         return
 
+    # Pre-apply validation: fail fast on protection downgrade BEFORE any
+    # side-effect (files, labels, protection). Otherwise an aborting
+    # downgrade would leave the repo in a partial-apply state with files
+    # and labels already written.
+    if (
+        protection_diff is not None
+        and not protection_diff.is_empty
+        and protection_diff.has_downgrades
+    ):
+        raise click.ClickException(
+            f"Protection downgrade detected during `apply --also-protection`. "
+            f"`apply` does not force-downgrade protection. Run "
+            f"`gh manage protection sync {owner_repo} --profile "
+            f"{profile_name} --downgrade-allowed --apply --yes` "
+            f"explicitly to override, then re-run `apply`."
+        )
+
     # Apply
     click.echo("")
     profile_sync.apply_files_diff(
@@ -258,14 +275,6 @@ def apply(
         labels_sync.apply_diff(labels_diff, owner_repo, progress=click.echo)
 
     if protection_diff is not None and not protection_diff.is_empty:
-        if protection_diff.has_downgrades:
-            raise click.ClickException(
-                f"Protection downgrade detected during `apply --also-protection`. "
-                f"`apply` does not force-downgrade protection. Run "
-                f"`gh manage protection sync {owner_repo} --profile "
-                f"{profile_name} --downgrade-allowed --apply --yes` "
-                f"explicitly to override, then re-run `apply`."
-            )
         backup_dir = _resolve_backup_dir()
         protection_sync.apply_protection_diff(
             protection_diff,

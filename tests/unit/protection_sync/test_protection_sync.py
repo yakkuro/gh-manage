@@ -227,6 +227,38 @@ def test_compute_diff_raw_dicts_preserved() -> None:
     assert diff.desired_raw  # non-empty
 
 
+def test_compute_diff_contexts_same_set_different_order_is_not_drift() -> None:
+    """GitHub returns required_status_checks.contexts in an arbitrary
+    order. Without set-based comparison, a reorder would surface as a
+    drift and cause sync --apply to PUT unnecessarily on every run."""
+    policy = _make_policy(
+        required_status_checks=RequiredStatusChecks(strict=True, contexts=[])
+    )
+    profile = _make_profile(
+        required_contexts=["ci-review / gitleaks", "pr-gate / test"]
+    )
+    current_raw = {
+        "required_status_checks": {
+            "strict": True,
+            "contexts": ["pr-gate / test", "ci-review / gitleaks"],  # reordered
+        },
+        "enforce_admins": {"enabled": False},
+        "required_pull_request_reviews": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews": False,
+            "require_code_owner_reviews": False,
+        },
+        "required_conversation_resolution": {"enabled": True},
+        "required_linear_history": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
+        "allow_deletions": {"enabled": False},
+    }
+    diff = compute_protection_diff(current_raw, policy, profile, "main")
+    # No context change emitted for same-set-reordered
+    context_changes = [c for c in diff.changes if "contexts" in c.field_path]
+    assert context_changes == []
+
+
 def _nonempty_diff(downgrades: tuple = ()) -> ProtectionDiff:
     """Build a ProtectionDiff with at least one change for apply_diff tests."""
     return ProtectionDiff(
@@ -364,9 +396,12 @@ def test_apply_diff_two_calls_same_second_produce_distinct_backups(
 
 
 # Backup content
-def test_apply_diff_backup_contains_yaml_dump_of_current_raw(
+def test_apply_diff_backup_contains_put_compatible_restore_body(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
+    """The backup must be a PUT-compatible body (not the raw GET response
+    with wrapper objects) so `gh api -X PUT ... --input <backup>` actually
+    restores the previous protection state."""
     import yaml
 
     from gh_manage.protection_sync import apply_protection_diff
@@ -374,9 +409,14 @@ def test_apply_diff_backup_contains_yaml_dump_of_current_raw(
     mocker.patch("gh_manage.github_api.protection.put_branch_protection")
     backup_dir = tmp_path / "backups"
 
+    # GET-shape response with wrapper objects and no `restrictions` key
     current_raw = {
-        "enforce_admins": {"enabled": True},
+        "enforce_admins": {"enabled": True, "url": "https://api.github.com/..."},
         "required_status_checks": {"strict": True, "contexts": ["x"]},
+        "required_linear_history": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
+        "allow_deletions": {"enabled": False},
+        "required_conversation_resolution": {"enabled": True},
     }
     diff = ProtectionDiff(
         changes=(ProtectionFieldChange("enforce_admins", True, False),),
@@ -389,7 +429,18 @@ def test_apply_diff_backup_contains_yaml_dump_of_current_raw(
     files = list(backup_dir.iterdir())
     assert len(files) == 1
     loaded = yaml.safe_load(files[0].read_text())
-    assert loaded == current_raw
+
+    # Wrappers unwrapped to flat booleans (PUT-compatible shape)
+    assert loaded["enforce_admins"] is True
+    assert loaded["required_linear_history"] is True
+    assert loaded["allow_force_pushes"] is False
+    assert loaded["allow_deletions"] is False
+    assert loaded["required_conversation_resolution"] is True
+    # Required status checks preserved (already in flat shape)
+    assert loaded["required_status_checks"] == {"strict": True, "contexts": ["x"]}
+    # restrictions: None is required by the PUT API
+    assert "restrictions" in loaded
+    assert loaded["restrictions"] is None
 
 
 def test_apply_diff_yaml_error_raises_backup_error(
