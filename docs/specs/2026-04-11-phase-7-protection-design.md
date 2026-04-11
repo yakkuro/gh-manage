@@ -19,7 +19,11 @@
 - [ ] `gh manage apply --profile python-service --also-protection --apply` applies files + protection (labels only with `--also-labels`)
 - [ ] `apply --also-protection` on downgrade detection stops with `ProtectionDowngradeError` guiding the user to `gh manage protection sync <repo> --profile <name> --downgrade-allowed` for explicit override
 - [ ] Profile with `protection_policy: None` → `protection sync` stops with actionable `ConfigValidationError`
-- [ ] All 13 downgrade rules have parametrized tests (upgrade direction also covered)
+- [ ] All 13 downgrade rules have parametrized tests (upgrade direction also covered) + tests for `normalize_protection_response` edge cases (empty dict, missing keys, GitHub API wrapper unwrapping)
+- [ ] Backup filename uses microsecond precision (`{owner}-{repo}-{YYYYMMDDTHHMMSS}-{microsecond}.yml`) — regression test asserts that two calls in the same second produce distinct filenames
+- [ ] Backup dir pre-flight check: if `~/.gh-manage` exists as a regular file (not directory), raise `ProtectionBackupError` with actionable message
+- [ ] TTY detection: non-TTY + `--downgrade-allowed` without `--yes` → exit 1 with "Non-TTY environment detected" message; non-TTY + `--downgrade-allowed` + `--yes` → proceeds
+- [ ] `ProtectionPolicyNotFoundError` message includes the list of available policies from the loaded `branch-protection.yml`
 - [ ] `branch-protection.yml` schema validation tests cover: unknown field, out-of-range review count, empty target_branches, null for optional fields
 - [ ] `put_branch_protection` sends the body via `run_gh_api(body=dict)` (Phase 5 checkpoint-refactor stdin path — regression guard)
 - [ ] `uv run pytest` — all pass (Phase 6 baseline 189 + Phase 7 additions)
@@ -328,7 +332,17 @@ class ProtectionError(Exception):
 
 class ProtectionPolicyNotFoundError(ProtectionError):
     """profile.protection_policy references a policy name not in
-    branch-protection.yml. Raised at compute time."""
+    branch-protection.yml. Raised at compute time.
+
+    Error message MUST include the list of available policies from the
+    loaded branch-protection.yml so the user can choose or fix a typo
+    without having to open the YAML file. Example:
+
+        f"Policy {requested!r} not found in branch-protection.yml. "
+        f"Available policies: {sorted(config.policies.keys())}. "
+        f"Either fix the profile's `protection_policy` field or add "
+        f"a new policy to src/gh_manage/data/branch-protection.yml."
+    """
 
 
 class ProtectionDowngradeError(ProtectionError):
@@ -377,6 +391,62 @@ def build_desired_protection(
     """
 
 
+def normalize_protection_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a GitHub branch-protection API response (or an empty
+    dict representing "no protection") into a canonical comparison shape.
+
+    Canonical shape (matches our model, not GitHub's wire shape):
+      {
+        "required_status_checks":
+          None | {"strict": bool, "contexts": list[str]},
+        "required_pull_request_reviews":
+          None | {
+            "required_approving_review_count": int,
+            "dismiss_stale_reviews": bool,
+            "require_code_owner_reviews": bool,
+          },
+        "enforce_admins": bool,
+        "required_conversation_resolution": bool,
+        "required_linear_history": bool,
+        "allow_force_pushes": bool,
+        "allow_deletions": bool,
+      }
+
+    Normalization rules (LOAD-BEARING for downgrade detection correctness):
+
+    1. Empty dict (from 404 → "no protection yet"): all fields default to
+       their WEAKEST value:
+         required_status_checks = None
+         required_pull_request_reviews = None
+         enforce_admins = False
+         required_conversation_resolution = False
+         required_linear_history = False
+         allow_force_pushes = True
+         allow_deletions = True
+    2. Missing top-level key: treated as absent → uses the weakest default.
+       GitHub's API sometimes omits falsy keys; treating missing as weakest
+       ensures "add protection" is classified as UPGRADE and "remove
+       protection" is correctly flagged as DOWNGRADE.
+    3. `enforce_admins` wrapper: GitHub returns {"enforce_admins":
+       {"enabled": bool, "url": str}}. Extract `.enabled` → bool. Missing
+       → False.
+    4. `allow_force_pushes` / `allow_deletions` wrappers: same shape as
+       enforce_admins ({"enabled": bool}). Extract `.enabled`. Missing →
+       True (the weakest state — GitHub's default for unmanaged branches
+       is to allow force-push and deletion).
+    5. `required_status_checks`: extract `strict` + `contexts` from the
+       wrapper object. Drop other fields (e.g., the overlapping `checks`
+       array). Missing top-level key → None.
+    6. `required_pull_request_reviews`: extract the 3 fields we care
+       about (required_approving_review_count, dismiss_stale_reviews,
+       require_code_owner_reviews). Drop the rest. Missing → None.
+
+    This is a plain-Python dict transformation — no pydantic validation,
+    because we want to accept malformed / partial API responses
+    gracefully rather than crash on unexpected shapes.
+    """
+
+
 def compute_protection_diff(
     current: dict[str, Any],
     policy: PolicySpec,
@@ -386,17 +456,18 @@ def compute_protection_diff(
     """Compute the diff between current protection and the desired state.
 
     Algorithm:
-      1. desired = build_desired_protection(policy, profile)
-      2. Walk the field tree comparing current vs desired:
+      1. normalized = normalize_protection_response(current)
+      2. desired = build_desired_protection(policy, profile)
+      3. Walk the field tree comparing normalized vs desired:
          - required_status_checks.{strict, contexts}
          - required_pull_request_reviews.{required_approving_review_count,
            dismiss_stale_reviews, require_code_owner_reviews}
          - enforce_admins, required_conversation_resolution,
            required_linear_history, allow_force_pushes, allow_deletions
-      3. For each field change, emit ProtectionFieldChange.
-      4. Run detect_downgrade(current, desired) and emit DowngradeFinding
-         for each weakening.
-      5. Return ProtectionDiff containing both lists + raw dicts.
+      4. For each field change, emit ProtectionFieldChange.
+      5. Run detect_downgrade(normalized, desired) and emit
+         DowngradeFinding for each weakening.
+      6. Return ProtectionDiff containing both lists + raw dicts.
 
     Pure: no IO, no subprocess, no git, no GitHub API.
     """
@@ -406,26 +477,44 @@ def detect_downgrade(
     current: dict[str, Any], desired: dict[str, Any]
 ) -> tuple[DowngradeFinding, ...]:
     """Check the 13 downgrade rules. Returns empty tuple if desired is
-    equal or stronger than current."""
+    equal or stronger than current. Both arguments MUST be
+    normalize_protection_response()-ed shape; raw GitHub API responses
+    must not be passed directly."""
 ```
 
-### 13 downgrade rules (合意済み)
+### 13 downgrade rules (合意済み、normalized shape 前提)
 
-| # | field_path | downgrade 条件 |
+各ルールは `(current, desired) → is_downgrade: bool` の純関数比較。入力は
+必ず `normalize_protection_response()` された canonical shape であること。
+
+| # | field_path | 比較条件(True = downgrade) |
 |---|---|---|
-| 1 | `required_pull_request_reviews.required_approving_review_count` | 減少 |
-| 2 | `required_pull_request_reviews.dismiss_stale_reviews` | true → false |
-| 3 | `required_pull_request_reviews.require_code_owner_reviews` | true → false |
-| 4 | `required_pull_request_reviews` | 存在 → null |
-| 5 | `enforce_admins` | true → false |
-| 6 | `required_status_checks.strict` | true → false |
-| 7 | `required_status_checks.contexts` | 要素削除(set difference 判定) |
-| 8 | `required_status_checks` | 存在 → null |
-| 9 | `required_conversation_resolution` | true → false |
-| 10 | `required_linear_history` | true → false |
-| 11 | `allow_force_pushes` | false → true |
-| 12 | `allow_deletions` | false → true |
-| 13 | `target_branches` | 要素削除(MVP では実質不使用、実装のみ) |
+| 1 | `required_pull_request_reviews.required_approving_review_count` | `desired < current`(例: 2 → 1、1 → 0 は downgrade、0 → 1 は upgrade) |
+| 2 | `required_pull_request_reviews.dismiss_stale_reviews` | `current is True and desired is False` |
+| 3 | `required_pull_request_reviews.require_code_owner_reviews` | `current is True and desired is False` |
+| 4 | `required_pull_request_reviews`(wrapper) | `current is not None and desired is None`(review 要件を完全撤去)|
+| 5 | `enforce_admins` | `current is True and desired is False` |
+| 6 | `required_status_checks.strict` | `current is True and desired is False` |
+| 7 | `required_status_checks.contexts` | `set(current) - set(desired)` が non-empty(任意の context が消える)|
+| 8 | `required_status_checks`(wrapper) | `current is not None and desired is None`(status check を完全撤去)|
+| 9 | `required_conversation_resolution` | `current is True and desired is False` |
+| 10 | `required_linear_history` | `current is True and desired is False` |
+| 11 | `allow_force_pushes` | `current is False and desired is True`(force push 許可)|
+| 12 | `allow_deletions` | `current is False and desired is True`(branch 削除許可)|
+| 13 | `target_branches` | `set(current) - set(desired)` が non-empty(保護ブランチの削除、Phase 7 MVP では発火しない)|
+
+**重要**: ルール 1 は `<` 比較(strictly less than)。`desired == current` は
+変化なしで downgrade ではない。ルール 7 と 13 は set difference(左辺 -
+右辺が non-empty な場合に downgrade)。ルール 4 と 8 は null 遷移
+専用で、どちらも null → null や object → object(内部変化は他のルールで
+検出)は対象外。
+
+`detect_downgrade` は 13 ルールを順に評価して DowngradeFinding を
+collect、非空なら tuple にして返す。ルール間は独立(1 つの変更が
+複数ルールに該当する場合、該当するすべてが個別の DowngradeFinding
+として記録される — 例: `required_pull_request_reviews` が存在 → null
+に遷移した場合、ルール 4 が発火するが、ルール 1/2/3 は発火しない
+(wrapper object がないため評価対象外))。
 
 ### `apply_protection_diff` — transactional apply
 
@@ -444,26 +533,68 @@ def apply_protection_diff(
     Order of operations (LOAD-BEARING):
       1. If diff.has_downgrades AND not downgrade_allowed:
          raise ProtectionDowngradeError BEFORE any IO.
-      2. Write backup to backup_dir/<owner>-<repo>-<timestamp>.yml
-         (YAML dump of diff.current_raw). If backup write fails
-         (permission, disk full), raise ProtectionBackupError.
+      2. Pre-flight check on backup_dir: if it exists and is NOT a directory
+         (e.g., a regular file at ~/.gh-manage), raise ProtectionBackupError
+         with actionable message. If it does not exist, create it with
+         `mkdir(parents=True, exist_ok=True)`.
+      3. Compute unique backup filename (collision-safe — see below) and
+         write YAML dump of diff.current_raw. If backup write fails
+         (permission, disk full, path too long), raise ProtectionBackupError.
          NEVER modify protection without a restorable backup.
-      3. PUT the desired body to GitHub API via
+      4. PUT the desired body to GitHub API via
          github_api.protection.put_branch_protection.
-      4. If PUT fails, propagate the GhError (wrap into
-         ProtectionApplyError if needed).
+      5. If PUT fails, propagate the GhError (wrap into
+         ProtectionApplyError if needed). The backup remains on disk
+         for manual restore via `gh api ... --input <backup-file>`.
 
     Transactional guarantees:
-      - Conflict check → backup → PUT is the full order.
-      - If steps 1 or 2 fail, nothing is modified on GitHub.
-      - Step 3 failure leaves the backup on disk for manual restore via
-        `gh api ... --input <backup-file>`.
+      - Conflict check → backup dir check → backup write → PUT is the full order.
+      - If steps 1, 2, or 3 fail, nothing is modified on GitHub.
+      - Step 4 failure leaves the backup on disk (intentional, for manual restore).
 
     `progress` is called before backup + before PUT:
       progress(f"backup → {backup_path}")
       progress(f"apply → {repo}:{target_branch}")
     """
 ```
+
+**Backup filename — collision-safe uniqueness (spec-critique CRITICAL #1):**
+
+Filename format: `{owner}-{repo}-{YYYYMMDDTHHMMSS}-{microsecond}.yml`
+
+Example: `yakkuro-gh-manage-20260411T120512-043921.yml`
+
+The 6-digit microsecond suffix ensures that two `apply_protection_diff` calls
+in the same second (legitimate retry scenario) produce distinct filenames.
+A second-resolution timestamp alone is NOT sufficient — Python's
+`datetime.now().strftime("%Y%m%dT%H%M%S")` would collide and the second
+backup would overwrite the first, destroying the original restore path.
+
+Implementation: `datetime.now().strftime("%Y%m%dT%H%M%S-%f")` (Python's `%f`
+directive yields 6-digit microseconds). In the extremely unlikely event of
+a sub-microsecond collision, `write_bytes()` will overwrite, but this is
+acceptable because: (a) microsecond precision is more than sufficient for
+any realistic CLI retry pattern, (b) the alternative (sequence-number
+scan of backup_dir) introduces its own race conditions without meaningful
+safety improvement for a single-user CLI.
+
+**Backup YAML format:**
+
+```python
+yaml.safe_dump(
+    diff.current_raw,
+    default_flow_style=False,   # block style for readability
+    sort_keys=True,             # stable key order for diff'ability
+    allow_unicode=True,         # preserve UTF-8 in descriptions etc.
+    indent=2,
+)
+```
+
+`sort_keys=True` intentionally differs from "preserve GitHub API order" —
+backups are consumed by diff tools and human inspection, both of which
+benefit from stable key order. When restoring via `gh api --input <file>`,
+GitHub accepts keys in any order, so the sort does not affect restore
+correctness.
 
 ## CLI commands & flow
 
@@ -519,10 +650,24 @@ gh manage protection sync [<path>] --profile <name>
     "Done. Protection updated for {owner_repo}:main."
 ```
 
-**`--yes` semantics:**
-- `--apply` + `--downgrade-allowed` の組み合わせ = 意図的な弱体化。TTY なら二重確認 prompt、非 TTY なら `--yes` を要求
-- `--apply` だけ(downgrade なし)は prompt なし
-- `--dry-run` は prompt なし
+**`--yes` semantics(spec-critique HIGH #4 対応、TTY detection 明示):**
+
+- `--apply` + `--downgrade-allowed` の組み合わせ = 意図的な弱体化
+- **TTY 判定方法**: `click.get_text_stream("stdin").isatty()` を使う(Python 標準の `sys.stdin.isatty()` と等価だが click 経由で testing 可能)
+- TTY = True なら `click.confirm("This will weaken N protection field(s). Continue?", default=False)` で二重確認
+- TTY = False(CI 環境、Docker、cron、パイプ入力等) AND `--yes` 未指定 → `click.ClickException("Non-TTY environment detected. Pass --yes to confirm the downgrade in CI/non-interactive contexts.")` で exit 1
+- TTY = False AND `--yes` 指定あり → 確認スキップ、apply 続行
+- `--apply` だけ(downgrade なし)は prompt なし(普通の safe case)
+- `--dry-run` は prompt なし(副作用なし)
+
+**TTY detection エッジケース:**
+- GitHub Actions: `runs-on: ubuntu-latest` は stdin が TTY ではない → `--yes` 要求
+- Docker interactive(`docker run -it`): stdin が TTY → interactive confirm
+- Docker non-interactive(`docker run`, ENTRYPOINT shell)TTY なし → `--yes` 要求
+- cron: stdin が /dev/null or 閉じる → TTY なし → `--yes` 要求
+- `gh-manage ... < /dev/null`: pipe input → TTY なし → `--yes` 要求
+
+すべて `--yes` フラグで明示 opt-in させる方針。デフォルトで安全側に倒す。
 
 ### `gh manage protection diff <repo> --profile <name>`
 
@@ -695,28 +840,38 @@ tests/unit/
 - `put_branch_protection` argv に `--input -` が入る
 - Malformed JSON response → `GhAPIError`
 
-**`test_downgrade.py`** (13 rules × 2 directions):
+**`test_downgrade.py`** (13 rules × 2 directions + normalization edge cases):
 - Review count 2 → 1 = downgrade
 - Review count 0 → 1 = NOT downgrade
 - `enforce_admins: true → false` = downgrade
 - `enforce_admins: false → true` = NOT downgrade
 - ... (残り 11 ルールも同様)
-- Current が空 dict → どんな desired も NOT downgrade
+- Current が空 dict(normalized: all weakest defaults)→ どんな "add protection" desired も NOT downgrade
 - Current と desired が完全一致 → NOT downgrade、`diff.is_empty`
+- **`normalize_protection_response` edge cases (新規 spec-critique 対応):**
+  - Empty dict `{}` → canonical shape with all weakest defaults
+  - `{"enforce_admins": {"enabled": True, "url": "..."}}` → `{"enforce_admins": True, ...}`(wrapper 展開)
+  - Missing `allow_force_pushes` → `True`(GitHub のデフォルト weakest)
+  - Missing `allow_deletions` → `True`
+  - `{"required_status_checks": {"strict": True, "contexts": [], "checks": [{...}]}}` → 余計な `checks` を drop、`strict` + `contexts` のみ残る
+  - `{"required_pull_request_reviews": {"required_approving_review_count": 1, "extra_field": "ignore"}}` → 既知 3 フィールドのみ残る、extra_field は drop
 
-**`test_protection_sync.py`** (~12 cases):
+**`test_protection_sync.py`** (~16 cases):
 - `compute_protection_diff(empty, policy, profile)` → 全 field が change、downgrade なし
 - `compute_protection_diff(matching, policy, profile)` → `is_empty`
 - `build_desired_protection` が `contexts = profile.required_contexts` を反映
-- `profile.protection_policy` が branch-protection.yml にない → `ProtectionPolicyNotFoundError`
+- `profile.protection_policy` が branch-protection.yml にない → `ProtectionPolicyNotFoundError`(available policies list が message に含まれる regression guard)
 - `apply_protection_diff` with downgrade + not allowed → `ProtectionDowngradeError`、backup 未作成、PUT 未呼出
 - `apply_protection_diff` with downgrade + allowed → backup 作成 + PUT 呼出
 - `apply_protection_diff` no downgrade → backup + PUT
-- Backup 書き込み失敗 → `ProtectionBackupError`、PUT 未呼出
+- `apply_protection_diff` backup dir pre-flight: 存在しない → 自動作成
+- `apply_protection_diff` backup dir pre-flight: `~/.gh-manage` が file → `ProtectionBackupError`、PUT 未呼出
+- Backup 書き込み失敗(permission denied 相当) → `ProtectionBackupError`、PUT 未呼出
 - PUT failure → backup は残る、エラー伝播
 - `progress` が backup → PUT の順で呼ばれる
-- Backup ファイル名 `<owner>-<repo>-<timestamp>.yml` 形式
-- Backup 内容が `current_raw` の YAML dump
+- **Backup filename uniqueness: `apply_protection_diff` を `datetime.now` mock で同一秒に 2 回呼んでも、microsecond suffix で 2 ファイルとも残る(上書きされない)regression guard**
+- Backup ファイル名形式: `{owner}-{repo}-{YYYYMMDDTHHMMSS}-{microsecond}.yml` の regex assertion
+- Backup 内容が `current_raw` の `yaml.safe_dump(sort_keys=True, allow_unicode=True, indent=2)` 結果と一致
 
 **`test_golden.py`** (2 cases):
 - Fixture profile + solo-default policy → `build_desired_protection` 結果 == expected YAML
@@ -732,9 +887,11 @@ tests/unit/
 - 存在しない policy 名 → `ProtectionPolicyNotFoundError`
 - Downgrade + no flag → `ProtectionDowngradeError`、exit 1
 - Downgrade + `--downgrade-allowed` + `--yes` → apply 実行
-- Downgrade + `--downgrade-allowed` + non-TTY + 非 `--yes` → error
+- Downgrade + `--downgrade-allowed` + non-TTY stdin + 非 `--yes` → error("Non-TTY environment detected" message)、exit 1
+- Downgrade + `--downgrade-allowed` + non-TTY stdin + `--yes` → apply 実行(TTY detection を `click.get_text_stream("stdin").isatty()` の mock で制御)
 - `diff` 差分あり → exit 0 または 1(downgrade 有無)
 - `diff` empty → "No changes."、exit 0
+- `ProtectionPolicyNotFoundError` message に "Available policies: ..." が含まれる(regression guard for spec-critique HIGH #5)
 
 **`test_init.py`** (+4 cases):
 - `protection_policy` 設定あり → `protection_diff` 計算 + 表示
