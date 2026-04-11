@@ -8,20 +8,26 @@
 
 ## Acceptance Criteria
 
-- [ ] `gh manage init --profile python-service` を空ディレクトリ(`git init` + `git remote add origin` 済み)で実行 → 2 つのファイルが配置される(`.github/workflows/ci.yml`, `CLAUDE.md`)
+- [ ] `gh manage init --profile python-service` を空ディレクトリ(`git init` + `git remote add origin` 済み + `gh auth login` 済み)で実行 → 2 つのファイルが配置される(`.github/workflows/ci.yml`, `CLAUDE.md`)、必要な親ディレクトリ(`.github/workflows/`)が自動作成される
 - [ ] `--dry-run`(デフォルト)で副作用なしに files diff + labels diff を表示
 - [ ] `--apply` で実際にファイル配置 + labels sync を実行
 - [ ] `--force` なしで `skip_if_exists: false` の既存ファイル差分があれば停止し、actionable な競合エラーを表示
 - [ ] `skip_if_exists: true` のファイルは `--force` 時も上書きされない(absolute 保護)
-- [ ] `gh manage apply --profile python-service`(default)は files のみ更新し、labels には触らない
+- [ ] `gh manage apply --profile python-service`(default)は files のみ更新し、labels には触らない(GitHub access なしで dry-run 完走)
 - [ ] `gh manage apply --profile python-service --also-labels --apply` で files + labels 両方更新
 - [ ] `gh manage apply --also-protection` は actionable error で停止("Phase 7 で実装予定")
-- [ ] git repo でない / origin remote がない場合は actionable error で停止
+- [ ] git repo でない / origin remote がない場合は actionable error で停止(各々別の typed error)
+- [ ] `origin` URL が github.com 以外(例: gitlab.com)の場合は actionable error で停止("gh-manage は github.com のみサポート")
+- [ ] `gh auth login` 未実行で `init` を起動 → `GhAuthError` を catch して "Run `gh auth login` first" を表示
+- [ ] symlink / 絶対パス / `..` を使った profile からの target 外への書き込みは `ProfilePathEscapeError` でブロック(`Path.resolve().is_relative_to()` ベース)
+- [ ] profile に重複 `dest` がある場合は load 時に `ConfigError`(pydantic ValidationError 経由)
+- [ ] profile の `name` field と filename(`<name>.yml`)が一致しない場合は load 時に `ConfigError`
+- [ ] git CLI への subprocess 呼び出しはすべて `LC_ALL=C` 環境変数付きで実行される(test で env arg を assert)
 - [ ] `uv run pytest` 全 pass(Phase 5 までの 102 件 + Phase 6 で追加されるテスト)
 - [ ] `uv run mypy src/` clean(既存 yaml stub note 以外)
 - [ ] `uv run ruff check src/ tests/` clean
 - [ ] `uv run ruff format --check src/ tests/` clean
-- [ ] dogfood smoke test: gh-manage 自身の repo で `gh manage apply --profile python-service --dry-run` がクラッシュせず実行できる
+- [ ] dogfood smoke test: gh-manage 自身の repo で `gh manage apply --profile python-service --dry-run` がクラッシュせず実行できる(差分が出ても OK)
 
 ## Scope (master spec の Phase 6 から)
 
@@ -182,7 +188,7 @@ files:
 
 ```python
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class FileEntry(BaseModel):
@@ -192,10 +198,15 @@ class FileEntry(BaseModel):
 
     @field_validator("source", "dest")
     @classmethod
-    def _no_traversal(cls, v: str) -> str:
-        # Security: prevent escape from templates_root or target
-        if ".." in v.split("/") or v.startswith("/"):
-            raise ValueError(f"Path must not contain '..' or be absolute: {v!r}")
+    def _no_obvious_traversal(cls, v: str) -> str:
+        """Cheap structural rejection. Real escape prevention happens at
+        apply time via Path.resolve().is_relative_to() — see profile_sync."""
+        if v.startswith("/"):
+            raise ValueError(f"Path must not be absolute: {v!r}")
+        if ".." in v.split("/"):
+            raise ValueError(f"Path must not contain '..' segments: {v!r}")
+        if not v:
+            raise ValueError("Path must not be empty")
         return v
 
 
@@ -204,7 +215,23 @@ class ProfileSpec(BaseModel):
     name: str
     description: str | None = None
     files: list[FileEntry]
+
+    @model_validator(mode="after")
+    def _check_unique_dest(self) -> "ProfileSpec":
+        """A profile cannot have two entries writing to the same dest path —
+        this would be a silent shadowing bug at apply time."""
+        seen: set[str] = set()
+        for entry in self.files:
+            if entry.dest in seen:
+                raise ValueError(
+                    f"Duplicate dest path in profile {self.name!r}: {entry.dest!r}"
+                )
+            seen.add(entry.dest)
+        return self
 ```
+
+**Filename ↔ `name` field consistency:**
+The CLI loads `<profile_name>.yml` from package data and constructs `ProfileSpec`. The CLI layer is responsible for asserting `profile.name == profile_name` after load and raising `ConfigError` on mismatch. This is a CLI-level invariant rather than a pydantic validator because pydantic doesn't know the file path.
 
 ### Schema versioning
 
@@ -252,7 +279,10 @@ class ProfileFilesDiff:
 
     @property
     def is_empty(self) -> bool:
-        """No actionable changes (creates or overwrites)."""
+        """No actionable changes — neither Creates nor Overwrites pending.
+        SkipExists and Noops are NOT counted: they may still appear in
+        diff output (for transparency), but `is_empty` reflects whether
+        `apply_files_diff` would write any bytes."""
         return not (self.creates or self.overwrites)
 
     @property
@@ -274,8 +304,27 @@ def compute_files_diff(
     byte-for-byte. Classifies into one of {Create, Overwrite, SkipExists, Noop}
     based on existence + content + skip_if_exists flag.
 
-    Pure: reads files but writes nothing. Raises ProfileError if a source
-    template is missing under templates_root.
+    Path safety (CRITICAL):
+    For each entry, this function resolves the absolute dest path:
+        resolved_dest = (target_root / entry.dest).resolve(strict=False)
+    and asserts:
+        resolved_dest.is_relative_to(target_root.resolve())
+    If the assertion fails (e.g., due to a symlink, an unexpected absolute
+    path, or a `..` that survived the schema validator), it raises
+    ProfilePathEscapeError with the offending entry. Same check for
+    source against templates_root. This is the LOAD-BEARING traversal
+    defense — the schema-level validator is only a cheap pre-filter.
+
+    Both target_root and templates_root must be Path. The CLI layer is
+    responsible for converting from importlib.resources.Traversable via
+    `Path(str(traversable))` (or the equivalent context-manager pattern
+    when reading data from a non-filesystem-backed resource — for the
+    Phase 6 wheel layout, all package data is filesystem-backed and
+    str()-conversion suffices).
+
+    Pure: reads files but writes nothing. Raises:
+      - ProfileTemplateNotFoundError: source template missing
+      - ProfilePathEscapeError: resolved dest or source escapes its root
     """
 
 
@@ -288,14 +337,22 @@ def apply_files_diff(
     """Apply the diff. Transactional with respect to overwrite conflicts.
 
     Behavior:
-      - Creates always written.
+      - Creates always written. Parent directories are created with
+        `dest.parent.mkdir(parents=True, exist_ok=True)` BEFORE the write.
+        This is required because consumer repos may be missing
+        `.github/workflows/` etc.
       - Overwrites: written iff force=True. If force=False AND overwrites
         is non-empty, raises ProfileConflictError BEFORE touching the
         filesystem (no partial writes).
       - SkipExists / Noops: no IO.
 
-    Mid-operation IO failures (disk full, permission denied) propagate as
-    OSError. Recovery via `git status`; no rollback by design.
+    Atomicity guarantees:
+      - Conflict check is fully transactional: if any overwrite would
+        require force and force=False, NOTHING is written.
+      - Mid-operation IO failures (disk full, permission denied) during
+        actual writes propagate as OSError after some files are already
+        written. Recovery via `git status` / `git checkout`. No rollback
+        by design — the CLI is meant to be run inside a git repo.
 
     `progress` is called with a one-line description before each write
     operation. CLI passes click.echo; tests pass list.append.
@@ -327,6 +384,12 @@ class ProfileConflictError(ProfileError):
 class ProfileTemplateNotFoundError(ProfileError):
     """A profile.files entry references a source path that doesn't exist
     under templates_root."""
+
+
+class ProfilePathEscapeError(ProfileError):
+    """A profile.files entry's resolved source or dest path escapes its
+    root directory (e.g., via symlink, absolute path, or surviving `..`).
+    Raised by compute_files_diff before any IO."""
 ```
 
 ## Engine: `git_cli.py`
@@ -359,19 +422,44 @@ class NoOriginRemoteError(GitError):
 - `NotAGitRepoError`: "Not a git repository: {path}. Run `git init` first."
 - `NoOriginRemoteError`: "No `origin` remote configured. Run `git remote add origin git@github.com:OWNER/REPO.git`."
 
+### Locale-stable subprocess invocation (LOAD-BEARING)
+
+すべての `git` subprocess 呼び出しは **`LC_ALL=C` を環境変数で強制** する。これは git の stderr メッセージマッチング(`"not a git repository"`, `"No such remote"`)が locale 依存だと CI / 多言語環境で error classification が破綻するため。
+
+```python
+import os
+import subprocess
+
+_GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"}
+
+def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_GIT_ENV,
+    )
+```
+
+すべての public 関数(`get_origin_owner_repo`, Phase 7+ で追加される `is_clean_tree` など)は `_run_git` を経由する。テストでは `subprocess.run` を mock するパターンで `env` 引数も assertion 対象にできる。
+
 ### API
 
 ```python
 def parse_origin_url(url: str) -> str:
     """Parse a git remote URL into 'owner/repo' form. Pure.
 
-    Supports:
+    Supports GitHub only (github.com):
       git@github.com:owner/repo.git    → owner/repo
       git@github.com:owner/repo        → owner/repo
       https://github.com/owner/repo.git → owner/repo
       https://github.com/owner/repo    → owner/repo
 
-    Raises ValueError on unsupported URLs (e.g., gitlab.com, ssh non-github).
+    Raises ValueError on unsupported URLs with an actionable message:
+      "Unsupported git remote URL: {url!r}. gh-manage only supports
+       GitHub (github.com) origins. Non-GitHub remotes (GitLab, Bitbucket,
+       self-hosted) are not supported in Phase 6."
     Pure: no IO.
     """
 
@@ -398,6 +486,23 @@ def get_origin_owner_repo(target: Path) -> str:
 
 ## CLI commands
 
+### Preconditions (both init and apply)
+
+LOAD-BEARING runtime requirements that must be satisfied before invocation. Each one has an actionable error path:
+
+| Precondition | Detected by | Failure error |
+|---|---|---|
+| `git` CLI on PATH | `git_cli.get_origin_owner_repo` | `GitNotInstalledError` |
+| target is a git work tree | same | `NotAGitRepoError` |
+| `origin` remote configured | same | `NoOriginRemoteError` |
+| `origin` URL points to github.com | `parse_origin_url` | `ValueError` (wrapped to `GitError`) |
+| `gh` CLI on PATH (any time labels are touched) | `github_client._raise_classified_error` via labels_api | `GhNotInstalledError` |
+| `gh` CLI authenticated (any time labels are touched) | same | `GhAuthError` |
+
+**Important:** `init` always touches labels (Q1 = B), so `init --dry-run` REQUIRES `gh auth login`. This is documented in the help text and the help message includes "Run `gh auth login` first."
+
+`apply` only requires `gh` CLI when `--also-labels` is set. Without it, `apply --dry-run` runs offline using only filesystem reads.
+
 ### `gh manage init`
 
 ```
@@ -406,7 +511,7 @@ gh manage init [<path>] --profile <name> [--dry-run] [--apply] [--force]
 
 **Flags:**
 - `path`: positional, default `.`
-- `--profile <name>`: required, identifies `config/profiles/<name>.yml`
+- `--profile <name>`: required; identifies `src/gh_manage/data/profiles/<name>.yml` package data
 - `--dry-run`: boolean, default behavior(明示も可)
 - `--apply`: boolean, mutually exclusive with `--dry-run`
 - `--force`: boolean, allows overwriting non-skip files
@@ -435,7 +540,8 @@ gh manage init [<path>] --profile <name> [--dry-run] [--apply] [--force]
     profile_sync.apply_files_diff(files_diff, force=force, progress=click.echo)
     labels_sync.apply_diff(labels_diff, owner_repo, progress=click.echo)
     Print "Done. Next steps:
-       git add .
+       git status                                    # review what gh-manage placed
+       git add <gh-manage paths from the diff>       # stage only the new files
        git commit -m 'chore: bootstrap with gh-manage init'"
 12. --apply + --dry-run → click.UsageError, exit 2
 ```
@@ -479,19 +585,32 @@ apply は init と違って "Next steps" メッセージを出さない(既存�
 
 ### Diff display format
 
+**Symbol legend:**
+
+| Symbol | Meaning | Counts toward `is_empty`? |
+|---|---|---|
+| `+ create` | dest does not exist; will be written | yes |
+| `! overwrite` | dest exists with different content; requires `--force` | yes |
+| `≈ skip` | dest exists, `skip_if_exists: true` honored | no |
+| `= noop` | dest exists with byte-identical content | no |
+| `+` (labels) | label create | yes |
+| `~` (labels) | label rename or color/description update | yes |
+| `-` (labels) | label delete (only with `--prune`) | yes |
+
+**Example dry-run output:**
+
 ```
 Files:
-  + create   .github/workflows/ci.yml      ← templates/ci/python-ci.yml
-  ≈ skip     CLAUDE.md                     (skip_if_exists, content unchanged)
-  = noop     CLAUDE.md                     (already up to date)
-  ! conflict .github/dependabot.yml        (would overwrite, content differs)
+  + create    .github/workflows/ci.yml      ← templates/ci/python-ci.yml
+  ≈ skip      CLAUDE.md                     (skip_if_exists)
+  = noop      .github/dependabot.yml        (already up to date)
+  ! overwrite .github/labeler.yml           (content differs, use --force)
 
 Labels:
   + chore    color=e1e7eb  desc='Maintenance'
   ~ bug      color=d73a4a  desc='Bug fix'
-  ...
 
-Dry-run: 1 file change, 5 label changes. Re-run with --apply to execute.
+Dry-run: 2 file changes, 2 label changes. Re-run with --apply to execute.
 ```
 
 エラー(`--apply` 時の conflict):
@@ -505,17 +624,34 @@ Error: 1 file(s) would be overwritten:
 Re-run with --force to overwrite, or remove the files manually.
 ```
 
-### Templates root resolution
+### Templates root resolution & Traversable→Path boundary
 
 `templates_root = importlib.resources.files("gh_manage.data") / "templates"` で解決する。`src/gh_manage/data/` が Python パッケージ(`__init__.py` 持ち)なので `files()` API で直接アクセスできる。編集可能インストール(`uv pip install -e .`)/ wheel 配布のどちらでも同じパスで動く。
 
+**型境界(LOAD-BEARING):**
+`importlib.resources.files()` は `Traversable` を返す。`profile_sync.compute_files_diff` は引数として `Path` を要求する(filesystem-backed と仮定して `read_bytes()` / `is_file()` 等を使うため)。CLI 層が境界で変換する責務を持つ:
+
+```python
+from importlib.resources import files
+from pathlib import Path
+
+# CLI layer (commands/init.py, commands/apply.py)
+templates_traversable = files("gh_manage.data") / "templates"
+templates_root: Path = Path(str(templates_traversable))
+```
+
+`str(traversable)` は wheel installs と editable installs の両方で実 filesystem path を返す(Python 3.12 + Hatchling の前提)。ZIP installs ではこのパターンは動かないが、gh-manage は zip-safe を保証しない(`pyproject.toml` でも zip-safe フラグなし)。
+
+エンジンは Path のみを受け取り、テストは `tmp_path` を直接渡せる。テストは `importlib.resources` を mock しない。
+
 ## Test strategy
 
-### `tests/unit/git_cli/test_git_cli.py` (~10 cases)
+### `tests/unit/git_cli/test_git_cli.py` (~12 cases)
 
 `subprocess.run` を mock するパターンは `tests/unit/github_client/test_github_client.py` を踏襲。
 
 - `parse_origin_url`: git@ form / https form / https with .git / https without .git / malformed → ValueError(5 cases)
+- `parse_origin_url`: gitlab.com URL → ValueError with "github.com" in message
 - `get_origin_owner_repo`:
   - 成功: stdout に valid URL → owner/repo を返す
   - subprocess returncode != 0 + stderr "not a git repository" → NotAGitRepoError
@@ -523,18 +659,21 @@ Re-run with --force to overwrite, or remove the files manually.
   - FileNotFoundError → GitNotInstalledError
   - その他 → GitError
 - 各エラーの actionable message が含まれることを assertion(2-3 cases)
+- **`subprocess.run` の `env` kwarg に `LC_ALL=C` が含まれることを assert**(LOAD-BEARING locale 強制の regression guard)
 
-### `tests/unit/models/test_profiles.py` (~6 cases)
+### `tests/unit/models/test_profiles.py` (~9 cases)
 
 - 有効な v1 profile が parse できる
 - `name` 欠落 → ValidationError
 - 空の `files` リスト → 有効(vacuous profile)
 - `version: 99` → SchemaVersionError(`load_config` 経由)
 - `skip_if_exists` のデフォルトが False
-- `dest: ../../etc/passwd` → ValidationError(traversal 防止)
+- `dest: ../../etc/passwd` → ValidationError(structural traversal pre-filter)
 - `dest: /absolute/path` → ValidationError
+- `dest: ""` → ValidationError(empty path)
+- 重複 `dest` を持つ profile → ValidationError("Duplicate dest path")
 
-### `tests/unit/profile_sync/test_profile_sync.py` (~12 cases)
+### `tests/unit/profile_sync/test_profile_sync.py` (~16 cases)
 
 `compute_files_diff` を `tmp_path` に対して呼び出す。fixtures は inline で組み立てる(profile を pydantic で構築、template ファイルを `tmp_path` に置く)。
 
@@ -544,19 +683,23 @@ Re-run with --force to overwrite, or remove the files manually.
 - 既存ファイル(内容違い) + skip_if_exists=True → SkipExists
 - 既存ファイル(同内容) + skip_if_exists=True → Noop(skipped ではない: 同内容なら触る必要なし)
 - source 不在 → ProfileTemplateNotFoundError
-- `is_empty` プロパティ
+- `is_empty` プロパティ(creates/overwrites のみカウント、skipped/noop は無視)
 - `has_overwrites` プロパティ
 - `apply_files_diff(force=False)` + overwrites あり → ProfileConflictError(filesystem 触らない、conflict 件数を message に含む)
 - `apply_files_diff(force=True)` で overwrite を実行
 - `apply_files_diff` で Create を書き、SkipExists / Noop は触らない
+- `apply_files_diff` で **親ディレクトリが存在しない場合に自動作成される**(`.github/workflows/` パターン)
 - `progress` callback が順番に呼ばれる
+- **`compute_files_diff` で `dest` が symlink で外部を指している場合 → ProfilePathEscapeError**
+- **`compute_files_diff` で `target_root / dest` の resolved path が target_root の外に出ている場合 → ProfilePathEscapeError**
+- **`compute_files_diff` で `source` が templates_root の外に出ている場合 → ProfilePathEscapeError**
 
 ### `tests/unit/profile_sync/test_golden.py` (AC #4 の golden file test)
 
 - `tests/fixtures/profiles/basic.yml` を読み込み、`tmp_path` に apply
 - 各書き出されたファイルが `tests/fixtures/templates/<source>` と byte-for-byte 一致することを assert
 
-### `tests/unit/cli/test_init.py` (~10 cases)
+### `tests/unit/cli/test_init.py` (~12 cases)
 
 `CliRunner` + `tmp_path` + mocker(`git_cli.get_origin_owner_repo`, `labels_api.list_labels`, `labels_sync.apply_diff` を mock):
 
@@ -566,8 +709,11 @@ Re-run with --force to overwrite, or remove the files manually.
 - --force で conflict 上書き
 - skip_if_exists=true は --force でも touch されない
 - profile not found → ConfigError → exit 1
+- profile filename と `name` field の不一致 → ConfigError → exit 1
 - not a git repo → NotAGitRepoError → exit 1、actionable msg
 - no origin remote → NoOriginRemoteError → exit 1、actionable msg
+- gitlab.com origin URL → GitError → exit 1、"github.com" を含むメッセージ
+- `gh auth` 未認証(`labels_api.list_labels` が `GhAuthError` を raise) → exit 1、"gh auth login" を含むメッセージ
 - --apply + --dry-run → exit 2(UsageError)
 - "Next steps" メッセージが --apply 後に表示される
 
