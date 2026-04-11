@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
+from pytest_mock import MockerFixture
 
 from gh_manage.models.branch_protection import (
     PolicySpec,
@@ -222,13 +225,6 @@ def test_compute_diff_raw_dicts_preserved() -> None:
     diff = compute_protection_diff(current_raw, policy, profile, "main")
     assert diff.current_raw == current_raw
     assert diff.desired_raw  # non-empty
-
-
-import re
-
-from pathlib import Path
-
-from pytest_mock import MockerFixture
 
 
 def _nonempty_diff(downgrades: tuple = ()) -> ProtectionDiff:
