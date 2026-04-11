@@ -112,9 +112,76 @@ def compute_files_diff(
 ) -> ProfileFilesDiff:
     """Compute the file placement diff for a profile.
 
-    Implementation lands in Task 6.
+    For each profile.files entry, compares dest content to source content
+    byte-for-byte and classifies into one of {Create, Overwrite, SkipExists,
+    Noop} based on existence + content + skip_if_exists flag.
+
+    Path safety (LOAD-BEARING):
+    For each entry, resolves the absolute dest and source paths and asserts
+    they stay inside target_root and templates_root respectively. This
+    handles symlinks, absolute paths, and any `..` segments that survived
+    the schema-level pre-filter. Raises ProfilePathEscapeError on violation
+    BEFORE any IO.
+
+    Pure: reads files but writes nothing. Raises:
+      - ProfileTemplateNotFoundError: source template missing
+      - ProfilePathEscapeError: resolved dest or source escapes its root
     """
-    raise NotImplementedError("Task 6")
+    target_root_resolved = target_root.resolve()
+    templates_root_resolved = templates_root.resolve()
+
+    creates: list[FileCreate] = []
+    overwrites: list[FileOverwrite] = []
+    skipped: list[FileSkipExists] = []
+    noops: list[FileNoop] = []
+
+    for entry in profile.files:
+        source_abs = (templates_root / entry.source).resolve(strict=False)
+        dest_abs = (target_root / entry.dest).resolve(strict=False)
+
+        if not source_abs.is_relative_to(templates_root_resolved):
+            raise ProfilePathEscapeError(
+                f"Profile entry source escapes templates root: "
+                f"{entry.source!r} resolves to {source_abs} which is outside "
+                f"{templates_root_resolved}."
+            )
+        if not dest_abs.is_relative_to(target_root_resolved):
+            raise ProfilePathEscapeError(
+                f"Profile entry dest escapes target root: "
+                f"{entry.dest!r} resolves to {dest_abs} which is outside "
+                f"{target_root_resolved}. A parent directory may be a symlink."
+            )
+
+        if not source_abs.is_file():
+            raise ProfileTemplateNotFoundError(
+                f"Profile entry references missing template: {entry.source!r} "
+                f"(looked in {templates_root_resolved}). "
+                f"Check the profile YAML against the templates directory."
+            )
+
+        source_bytes = source_abs.read_bytes()
+
+        if not dest_abs.exists():
+            creates.append(FileCreate(source=source_abs, dest=dest_abs))
+            continue
+
+        dest_bytes = dest_abs.read_bytes()
+        if source_bytes == dest_bytes:
+            noops.append(FileNoop(dest=dest_abs))
+            continue
+
+        if entry.skip_if_exists:
+            skipped.append(FileSkipExists(dest=dest_abs))
+            continue
+
+        overwrites.append(FileOverwrite(source=source_abs, dest=dest_abs))
+
+    return ProfileFilesDiff(
+        creates=tuple(creates),
+        overwrites=tuple(overwrites),
+        skipped=tuple(skipped),
+        noops=tuple(noops),
+    )
 
 
 def apply_files_diff(
