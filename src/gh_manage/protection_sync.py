@@ -183,8 +183,42 @@ def build_desired_protection(
     policy: PolicySpec, profile: ProfileSpec
 ) -> dict[str, Any]:
     """Combine a policy with a profile to produce the effective PUT body.
-    Implementation in Task 7."""
-    raise NotImplementedError("Task 7")
+
+    Implements the Phase 7 spec's Profile ↔ Branch Protection contract:
+        effective.required_status_checks.contexts = profile.required_contexts
+    (complete replacement — the policy's contexts: [] is always overwritten).
+
+    All other fields come from the policy as-is. Returns a dict shaped
+    for the GitHub PUT /branches/{branch}/protection API body.
+    """
+    if policy.required_status_checks is None:
+        rsc: dict[str, Any] | None = None
+    else:
+        rsc = {
+            "strict": policy.required_status_checks.strict,
+            "contexts": list(profile.required_contexts),  # profile override
+        }
+
+    if policy.required_pull_request_reviews is None:
+        rpr: dict[str, Any] | None = None
+    else:
+        rpr = {
+            "required_approving_review_count": policy.required_pull_request_reviews.required_approving_review_count,
+            "dismiss_stale_reviews": policy.required_pull_request_reviews.dismiss_stale_reviews,
+            "require_code_owner_reviews": policy.required_pull_request_reviews.require_code_owner_reviews,
+        }
+
+    return {
+        "required_status_checks": rsc,
+        "enforce_admins": policy.enforce_admins,
+        "required_pull_request_reviews": rpr,
+        "required_conversation_resolution": policy.required_conversation_resolution,
+        "required_linear_history": policy.required_linear_history,
+        "allow_force_pushes": policy.allow_force_pushes,
+        "allow_deletions": policy.allow_deletions,
+        # restrictions is required by the API and means "no user/team restrictions"
+        "restrictions": None,
+    }
 
 
 def detect_downgrade(
@@ -371,8 +405,111 @@ def compute_protection_diff(
     target_branch: str = "main",
 ) -> ProtectionDiff:
     """Compute the diff between current protection and desired state.
-    Implementation in Task 7."""
-    raise NotImplementedError("Task 7")
+
+    Algorithm:
+      1. normalized = normalize_protection_response(current)
+      2. desired = build_desired_protection(policy, profile)
+      3. Walk the field tree comparing normalized vs desired.
+      4. Run detect_downgrade(normalized, desired) and emit DowngradeFinding
+         for each weakening.
+      5. Return ProtectionDiff containing changes + downgrades + raw dicts.
+
+    Pure: no IO, no subprocess, no git, no GitHub API.
+    """
+    normalized = normalize_protection_response(current)
+    desired = build_desired_protection(policy, profile)
+
+    changes: list[ProtectionFieldChange] = []
+
+    # Compare each field that both canonical shapes have
+    for field in (
+        "enforce_admins",
+        "required_conversation_resolution",
+        "required_linear_history",
+        "allow_force_pushes",
+        "allow_deletions",
+    ):
+        if normalized.get(field) != desired.get(field):
+            changes.append(
+                ProtectionFieldChange(
+                    field_path=field,
+                    current_value=normalized.get(field),
+                    desired_value=desired.get(field),
+                )
+            )
+
+    # required_status_checks (wrapper comparison)
+    curr_rsc = normalized.get("required_status_checks")
+    desi_rsc = desired.get("required_status_checks")
+    if curr_rsc is None and desi_rsc is None:
+        pass
+    elif curr_rsc != desi_rsc:
+        # Break down the nested diff for clearer output
+        if (curr_rsc is None) != (desi_rsc is None):
+            changes.append(
+                ProtectionFieldChange(
+                    field_path="required_status_checks",
+                    current_value=curr_rsc,
+                    desired_value=desi_rsc,
+                )
+            )
+        else:
+            assert curr_rsc is not None and desi_rsc is not None
+            if curr_rsc.get("strict") != desi_rsc.get("strict"):
+                changes.append(
+                    ProtectionFieldChange(
+                        field_path="required_status_checks.strict",
+                        current_value=curr_rsc.get("strict"),
+                        desired_value=desi_rsc.get("strict"),
+                    )
+                )
+            if curr_rsc.get("contexts") != desi_rsc.get("contexts"):
+                changes.append(
+                    ProtectionFieldChange(
+                        field_path="required_status_checks.contexts",
+                        current_value=curr_rsc.get("contexts"),
+                        desired_value=desi_rsc.get("contexts"),
+                    )
+                )
+
+    # required_pull_request_reviews (wrapper comparison)
+    curr_rpr = normalized.get("required_pull_request_reviews")
+    desi_rpr = desired.get("required_pull_request_reviews")
+    if curr_rpr is None and desi_rpr is None:
+        pass
+    elif curr_rpr != desi_rpr:
+        if (curr_rpr is None) != (desi_rpr is None):
+            changes.append(
+                ProtectionFieldChange(
+                    field_path="required_pull_request_reviews",
+                    current_value=curr_rpr,
+                    desired_value=desi_rpr,
+                )
+            )
+        else:
+            assert curr_rpr is not None and desi_rpr is not None
+            for sub in (
+                "required_approving_review_count",
+                "dismiss_stale_reviews",
+                "require_code_owner_reviews",
+            ):
+                if curr_rpr.get(sub) != desi_rpr.get(sub):
+                    changes.append(
+                        ProtectionFieldChange(
+                            field_path=f"required_pull_request_reviews.{sub}",
+                            current_value=curr_rpr.get(sub),
+                            desired_value=desi_rpr.get(sub),
+                        )
+                    )
+
+    downgrades = detect_downgrade(normalized, desired)
+
+    return ProtectionDiff(
+        changes=tuple(changes),
+        downgrades=downgrades,
+        current_raw=current,
+        desired_raw=desired,
+    )
 
 
 def apply_protection_diff(
