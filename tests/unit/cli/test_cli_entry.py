@@ -25,15 +25,9 @@ from gh_manage.cli import main
 # Exact stub error messages keyed by subcommand. Kept in lockstep with
 # src/gh_manage/commands/*.py. If this map drifts from the real stubs, the
 # test fails — which is the point.
+# Note: init (Phase 6) and apply (Phase 6) are now implemented, so they are
+# removed from this map. The test below only runs for remaining stubs.
 STUB_ERROR_MESSAGES: dict[str, str] = {
-    "init": (
-        "error: `gh manage init` is not yet implemented — "
-        "scheduled for cli/v0.3.0 (Phase 6)."
-    ),
-    "apply": (
-        "error: `gh manage apply` is not yet implemented — "
-        "scheduled for cli/v0.3.0 (Phase 6)."
-    ),
     "protection": (
         "error: `gh manage protection` is not yet implemented — "
         "scheduled for cli/v0.4.0 (Phase 7)."
@@ -75,14 +69,18 @@ def test_short_help_flag_shows_exact_prog_name() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "apply", "protection", "drift", "issues"],
+    ["protection", "drift", "issues"],
 )
 def test_stub_subcommand_exits_with_exact_phase_message(subcommand: str) -> None:
     """Each stub must print the EXACT error message from STUB_ERROR_MESSAGES.
     This guards against phase-to-command drift across cli.py, the stub files,
     CHANGELOG-cli.md, and docs/usage/cli.md. Uses exact equality (rstrip'd)
     so any additional output (e.g., a stub accidentally printing before its
-    error) would be caught."""
+    error) would be caught.
+
+    Note: init (Phase 6) and apply (Phase 6) are now implemented and no longer
+    stubs, so they are excluded from this test.
+    """
     runner = CliRunner()
     result = runner.invoke(main, [subcommand], prog_name="gh-manage")
     assert result.exit_code == 1
@@ -101,7 +99,7 @@ def test_unknown_subcommand_exits_with_click_usage_error() -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "apply", "protection", "drift", "issues"],
+    ["protection", "drift", "issues"],
 )
 def test_stub_subcommand_help_shows_help_without_firing_stub(subcommand: str) -> None:
     """`gh manage <stub> --help` must display the subcommand's help text
@@ -109,7 +107,11 @@ def test_stub_subcommand_help_shows_help_without_firing_stub(subcommand: str) ->
     click dispatches --help before invoking the command callback, so the
     stub's `sys.exit(1)` must NOT run.
 
-    Also verifies that prog_name propagates into subcommand usage lines."""
+    Also verifies that prog_name propagates into subcommand usage lines.
+
+    Note: init (Phase 6) and apply (Phase 6) are now implemented and no longer
+    stubs, so they are excluded from this test.
+    """
     runner = CliRunner()
     result = runner.invoke(main, [subcommand, "--help"], prog_name="gh-manage")
     assert result.exit_code == 0
