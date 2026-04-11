@@ -110,9 +110,73 @@ class ProtectionApplyError(ProtectionError):
 
 # Stub engine functions — implementations land in Tasks 5-8
 def normalize_protection_response(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize GitHub API response to canonical comparison shape.
-    Implementation in Task 5."""
-    raise NotImplementedError("Task 5")
+    """Normalize a GitHub branch-protection API response into a canonical
+    comparison shape. See Phase 7 design spec Section 'Engine' for the
+    full rule set.
+
+    Rules:
+    1. Empty dict / missing top-level key → weakest default for each field
+    2. `enforce_admins` → unwrap {enabled: bool}, default False
+    3. `allow_force_pushes` / `allow_deletions` → unwrap {enabled: bool},
+       default True (weakest — GitHub's unmanaged default allows force push/delete)
+    4. `required_status_checks` → extract `strict` + `contexts`, drop
+       other fields; missing → None
+    5. `required_pull_request_reviews` → extract the 3 fields we care
+       about (count, dismiss_stale, code_owner); missing → None
+    6. `required_conversation_resolution` / `required_linear_history` →
+       unwrap {enabled: bool}, default False
+    """
+
+    def _unwrap_enabled(key: str, default: bool) -> bool:
+        wrapper = raw.get(key)
+        if wrapper is None:
+            return default
+        if isinstance(wrapper, dict):
+            return bool(wrapper.get("enabled", default))
+        if isinstance(wrapper, bool):
+            return wrapper
+        return default
+
+    # required_status_checks
+    rsc_raw = raw.get("required_status_checks")
+    rsc: dict[str, Any] | None
+    if rsc_raw is None:
+        rsc = None
+    else:
+        rsc = {
+            "strict": bool(rsc_raw.get("strict", False)),
+            "contexts": list(rsc_raw.get("contexts", [])),
+        }
+
+    # required_pull_request_reviews
+    rpr_raw = raw.get("required_pull_request_reviews")
+    rpr: dict[str, Any] | None
+    if rpr_raw is None:
+        rpr = None
+    else:
+        rpr = {
+            "required_approving_review_count": int(
+                rpr_raw.get("required_approving_review_count", 0)
+            ),
+            "dismiss_stale_reviews": bool(rpr_raw.get("dismiss_stale_reviews", False)),
+            "require_code_owner_reviews": bool(
+                rpr_raw.get("require_code_owner_reviews", False)
+            ),
+        }
+
+    return {
+        "required_status_checks": rsc,
+        "required_pull_request_reviews": rpr,
+        "enforce_admins": _unwrap_enabled("enforce_admins", default=False),
+        "required_conversation_resolution": _unwrap_enabled(
+            "required_conversation_resolution", default=False
+        ),
+        "required_linear_history": _unwrap_enabled(
+            "required_linear_history", default=False
+        ),
+        "allow_force_pushes": _unwrap_enabled("allow_force_pushes", default=True),
+        "allow_deletions": _unwrap_enabled("allow_deletions", default=True),
+    }
 
 
 def build_desired_protection(
