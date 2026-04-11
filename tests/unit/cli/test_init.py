@@ -16,6 +16,11 @@ from gh_manage.git_cli import (
 )
 from gh_manage.github_client import GhAuthError
 from gh_manage.labels_sync import LabelsDiff
+from gh_manage.protection_sync import (
+    DowngradeFinding,
+    ProtectionDiff,
+    ProtectionFieldChange,
+)
 
 
 def _empty_labels_diff() -> LabelsDiff:
@@ -214,11 +219,6 @@ def test_init_profile_name_path_traversal_rejected(
 
 
 # Phase 7: Branch protection in init
-from gh_manage.protection_sync import (
-    DowngradeFinding,
-    ProtectionDiff,
-    ProtectionFieldChange,
-)
 
 
 def _empty_protection_diff() -> ProtectionDiff:
