@@ -17,6 +17,7 @@ from gh_manage.profile_sync import (
     ProfileFilesDiff,
     ProfilePathEscapeError,
     ProfileTemplateNotFoundError,
+    apply_files_diff,
     compute_files_diff,
 )
 
@@ -273,3 +274,157 @@ def test_file_create_is_frozen() -> None:
     fc = FileCreate(source=Path("/s"), dest=Path("/d"))
     with pytest.raises(Exception):  # FrozenInstanceError
         fc.source = Path("/other")  # type: ignore[misc]
+
+
+# apply_files_diff tests
+
+
+def test_apply_files_diff_writes_creates(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "new\n")
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest=".github/workflows/ci.yml"))
+    diff = compute_files_diff(profile, target, templates)
+    apply_files_diff(diff, target, templates)
+
+    written = target / ".github/workflows/ci.yml"
+    assert written.exists()
+    assert written.read_text() == "new\n"
+
+
+def test_apply_files_diff_creates_parent_directories(tmp_path: Path) -> None:
+    """Phase 6 AC: parent directories must be created automatically.
+    Consumer repos may be missing .github/workflows/."""
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "x\n")
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest=".github/workflows/ci.yml"))
+    diff = compute_files_diff(profile, target, templates)
+
+    assert not (target / ".github").exists()
+    apply_files_diff(diff, target, templates)
+    assert (target / ".github" / "workflows" / "ci.yml").is_file()
+
+
+def test_apply_files_diff_overwrite_blocked_without_force(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "new\n")
+    _write_target(target, "ci.yml", "old\n")
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest="ci.yml"))
+    diff = compute_files_diff(profile, target, templates)
+    with pytest.raises(ProfileConflictError):
+        apply_files_diff(diff, target, templates, force=False)
+
+    # File untouched
+    assert (target / "ci.yml").read_text() == "old\n"
+
+
+def test_apply_files_diff_overwrite_allowed_with_force(tmp_path: Path) -> None:
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "ci.yml", "new\n")
+    _write_target(target, "ci.yml", "old\n")
+
+    profile = _make_profile(FileEntry(source="ci.yml", dest="ci.yml"))
+    diff = compute_files_diff(profile, target, templates)
+    apply_files_diff(diff, target, templates, force=True)
+    assert (target / "ci.yml").read_text() == "new\n"
+
+
+def test_apply_files_diff_skip_if_exists_not_overwritten_with_force(
+    tmp_path: Path,
+) -> None:
+    """LOAD-BEARING: skip_if_exists is absolute. Even --force does not
+    touch a SkipExists entry."""
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "claude.md", "starter\n")
+    _write_target(target, "CLAUDE.md", "user content\n")
+
+    profile = _make_profile(
+        FileEntry(source="claude.md", dest="CLAUDE.md", skip_if_exists=True)
+    )
+    diff = compute_files_diff(profile, target, templates)
+    apply_files_diff(diff, target, templates, force=True)
+    assert (target / "CLAUDE.md").read_text() == "user content\n"
+
+
+def test_apply_files_diff_progress_callback_invoked_per_write(
+    tmp_path: Path,
+) -> None:
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "a.yml", "a\n")
+    _write_template(templates, "b.yml", "b\n")
+    _write_target(target, "c.yml", "c-old\n")  # will overwrite
+    _write_template(templates, "c.yml", "c-new\n")
+
+    profile = _make_profile(
+        FileEntry(source="a.yml", dest="a.yml"),
+        FileEntry(source="b.yml", dest="b.yml"),
+        FileEntry(source="c.yml", dest="c.yml"),
+    )
+    diff = compute_files_diff(profile, target, templates)
+
+    progress_calls: list[str] = []
+    apply_files_diff(
+        diff, target, templates, force=True, progress=progress_calls.append
+    )
+
+    assert len(progress_calls) == 3
+
+
+def test_apply_files_diff_skipped_and_noops_do_not_invoke_progress(
+    tmp_path: Path,
+) -> None:
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "a.yml", "x\n")
+    _write_target(target, "a.yml", "x\n")  # noop
+    _write_template(templates, "b.yml", "starter\n")
+    _write_target(target, "b.yml", "user\n")  # skipped
+
+    profile = _make_profile(
+        FileEntry(source="a.yml", dest="a.yml"),
+        FileEntry(source="b.yml", dest="b.yml", skip_if_exists=True),
+    )
+    diff = compute_files_diff(profile, target, templates)
+
+    progress_calls: list[str] = []
+    apply_files_diff(diff, target, templates, progress=progress_calls.append)
+    assert progress_calls == []
+
+
+def test_apply_files_diff_conflict_check_is_atomic(tmp_path: Path) -> None:
+    """LOAD-BEARING: if force=False and ANY overwrite exists, NO file is
+    written — not even the Creates."""
+    templates = tmp_path / "templates"
+    target = tmp_path / "target"
+    target.mkdir()
+    _write_template(templates, "create.yml", "new\n")
+    _write_template(templates, "overwrite.yml", "new\n")
+    _write_target(target, "overwrite.yml", "old\n")
+
+    profile = _make_profile(
+        FileEntry(source="create.yml", dest="create.yml"),
+        FileEntry(source="overwrite.yml", dest="overwrite.yml"),
+    )
+    diff = compute_files_diff(profile, target, templates)
+    with pytest.raises(ProfileConflictError):
+        apply_files_diff(diff, target, templates, force=False)
+
+    # The Create entry must NOT have been written
+    assert not (target / "create.yml").exists()
+    # The Overwrite target must be untouched
+    assert (target / "overwrite.yml").read_text() == "old\n"

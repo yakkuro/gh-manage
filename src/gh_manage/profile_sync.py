@@ -194,6 +194,48 @@ def apply_files_diff(
 ) -> None:
     """Apply the diff with transactional conflict semantics.
 
-    Implementation lands in Task 7.
+    Behavior:
+      - Conflict check first: if force=False AND overwrites is non-empty,
+        raise ProfileConflictError BEFORE touching the filesystem. Nothing
+        is written, including Creates from the same diff.
+      - Creates: written. Parent directories created via
+        dest.parent.mkdir(parents=True, exist_ok=True).
+      - Overwrites (only when force=True): written, parent dirs ensured.
+      - SkipExists / Noops: no IO, no progress callback.
+
+    TOCTOU defense-in-depth: each dest path is re-validated against
+    target_root immediately before the write. Compute-time validation
+    already ran, but a parent component could become a symlink in the
+    interim. Single-user CLI has no adversarial actor, but the cost of
+    re-validation is one Path.resolve() per file.
+
+    Mid-operation IO failures (disk full, permission denied) propagate
+    as OSError. No rollback by design — recovery is via `git status` /
+    `git checkout`.
+
+    `progress` is called with a one-line description per WRITE
+    operation (not per skipped/noop entry).
     """
-    raise NotImplementedError("Task 7")
+    if diff.overwrites and not force:
+        raise ProfileConflictError(diff.overwrites)
+
+    target_root_resolved = target_root.resolve()
+
+    def _safe_write(source: Path, dest: Path) -> None:
+        # TOCTOU re-validation
+        resolved = dest.resolve(strict=False)
+        if not resolved.is_relative_to(target_root_resolved):
+            raise ProfilePathEscapeError(
+                f"Path escape detected at write time: {dest} resolves to "
+                f"{resolved} outside {target_root_resolved}."
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(source.read_bytes())
+
+    for create in diff.creates:
+        progress(f"+ create   {create.dest}")
+        _safe_write(create.source, create.dest)
+
+    for overwrite in diff.overwrites:
+        progress(f"! overwrite {overwrite.dest}")
+        _safe_write(overwrite.source, overwrite.dest)
