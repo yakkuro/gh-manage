@@ -128,7 +128,7 @@ def _resolve_branch_protection_path() -> Path:
 )
 @click.option(
     "--report-mode",
-    type=click.Choice(["stdout", "json", "markdown-file"]),
+    type=click.Choice(["stdout", "json", "markdown-file", "issue"]),
     default="stdout",
     help="Report format. Destination is --output (defaults to stdout).",
 )
@@ -187,6 +187,16 @@ def drift(
             rendered = drift_sync.format_json_report(filtered)
         case "markdown-file":
             rendered = drift_sync.format_markdown_report(filtered)
+        case "issue":
+            from datetime import datetime, timezone
+
+            status = drift_sync.resolve_drift_issue(
+                filtered,
+                owner_repo,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            click.echo(status)
+            return
         case _:
             # click.Choice prevents this
             raise ValueError(f"Unknown report mode: {report_mode!r}")

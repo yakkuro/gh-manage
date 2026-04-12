@@ -230,3 +230,56 @@ def test_drift_output_path_write_failure_raises(
     )
     assert result.exit_code == 1
     assert "Cannot write" in result.output or "cannot write" in result.output.lower()
+
+
+# Task 6: --report-mode issue
+
+
+def test_drift_issue_mode_creates_issue(mocker: MockerFixture, tmp_path: Path) -> None:
+    _patch_git_and_repo(mocker)
+    _patch_run_all_checks(mocker, (_sample_finding(),))
+    mock_resolve = mocker.patch(
+        "gh_manage.commands.drift.drift_sync.resolve_drift_issue",
+        return_value="Created issue #42 on yakkuro/gh-manage (1 findings)",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "drift",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--report-mode",
+            "issue",
+        ],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Created issue #42" in result.output
+    mock_resolve.assert_called_once()
+
+
+def test_drift_issue_mode_zero_findings(mocker: MockerFixture, tmp_path: Path) -> None:
+    _patch_git_and_repo(mocker)
+    _patch_run_all_checks(mocker, ())
+    mock_resolve = mocker.patch(
+        "gh_manage.commands.drift.drift_sync.resolve_drift_issue",
+        return_value="No drift detected for yakkuro/gh-manage. No Issue created.",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "drift",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--report-mode",
+            "issue",
+        ],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0
+    assert "No drift" in result.output
+    mock_resolve.assert_called_once()
