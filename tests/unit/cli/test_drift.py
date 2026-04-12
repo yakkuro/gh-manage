@@ -394,3 +394,64 @@ def test_drift_all_skips_disabled_repos(
     )
     assert result.exit_code == 0
     assert "SKIPPED" in result.output or "skipped" in result.output.lower()
+
+
+# Task 8: --all + issue mode integration
+
+
+def test_drift_all_issue_mode_calls_resolve_per_repo(
+    mocker: MockerFixture,
+) -> None:
+    from gh_manage.models.repos import RepoEntry, ReposConfig
+
+    def mock_load_config_side_effect(path, config_type):
+        from gh_manage.models.profiles import ProfileSpec
+
+        if config_type == ReposConfig:
+            return ReposConfig(
+                version=1,
+                repos=[
+                    RepoEntry(name="yakkuro/gh-manage", profile="python-service"),
+                    RepoEntry(name="yakkuro/port-registry", profile="python-service"),
+                ],
+            )
+        # For ProfileSpec and other configs, return a minimal valid profile
+        return ProfileSpec(
+            version=1,
+            name="python-service",
+            description="Python service",
+            files=[],
+            protection_policy=None,
+        )
+
+    mocker.patch(
+        "gh_manage.commands.drift.load_config",
+        side_effect=mock_load_config_side_effect,
+    )
+    mocker.patch(
+        "gh_manage.commands.drift.repo_info.get_default_branch",
+        return_value="main",
+    )
+    mocker.patch(
+        "gh_manage.commands.drift.drift_sync.run_all_checks",
+        return_value=(),
+    )
+    mocker.patch("gh_manage.drift_sync.labels_api.list_labels", return_value=[])
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={},
+    )
+    mock_resolve = mocker.patch(
+        "gh_manage.commands.drift.drift_sync.resolve_drift_issue",
+        return_value="No drift",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["drift", "--all", "--report-mode", "issue"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0
+    # resolve_drift_issue called for each enabled repo
+    assert mock_resolve.call_count == 2
