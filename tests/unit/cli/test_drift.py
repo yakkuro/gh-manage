@@ -283,3 +283,114 @@ def test_drift_issue_mode_zero_findings(mocker: MockerFixture, tmp_path: Path) -
     assert result.exit_code == 0
     assert "No drift" in result.output
     mock_resolve.assert_called_once()
+
+
+# Task 7: --all flag
+
+
+def test_drift_all_scans_repos_from_config(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    mocker.patch(
+        "gh_manage.commands.drift.repo_info.get_default_branch",
+        return_value="main",
+    )
+    mocker.patch(
+        "gh_manage.commands.drift.drift_sync.run_all_checks",
+        return_value=(),
+    )
+    # Mock labels_api and protection_api so production checks don't hit real API
+    mocker.patch("gh_manage.drift_sync.labels_api.list_labels", return_value=[])
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={},
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["drift", "--all", "--report-mode", "stdout"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0, result.output
+    assert "yakkuro/gh-manage" in result.output or "Scan complete" in result.output
+
+
+def test_drift_all_and_path_are_mutually_exclusive(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "drift",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--all",
+        ],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code != 0
+    assert (
+        "mutually exclusive" in result.output.lower()
+        or "cannot use" in result.output.lower()
+    )
+
+
+def test_drift_all_skips_disabled_repos(
+    mocker: MockerFixture,
+) -> None:
+    from gh_manage.models.repos import RepoEntry, ReposConfig
+
+    # Mock load_config to return ReposConfig for repos.yml, ProfileSpec for profile
+    def mock_load_config_side_effect(path, config_type):
+        from gh_manage.models.profiles import ProfileSpec
+
+        if config_type == ReposConfig:
+            return ReposConfig(
+                version=1,
+                repos=[
+                    RepoEntry(
+                        name="yakkuro/gh-manage", profile="python-service", enabled=True
+                    ),
+                    RepoEntry(
+                        name="yakkuro/disabled", profile="python-service", enabled=False
+                    ),
+                ],
+            )
+        # For ProfileSpec, return a minimal valid profile
+        return ProfileSpec(
+            version=1,
+            name="python-service",
+            description="Python service",
+            files=[],
+            protection_policy=None,
+        )
+
+    mocker.patch(
+        "gh_manage.commands.drift.load_config",
+        side_effect=mock_load_config_side_effect,
+    )
+    mocker.patch(
+        "gh_manage.commands.drift.repo_info.get_default_branch",
+        return_value="main",
+    )
+    mocker.patch(
+        "gh_manage.commands.drift.drift_sync.run_all_checks",
+        return_value=(),
+    )
+    mocker.patch("gh_manage.drift_sync.labels_api.list_labels", return_value=[])
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={},
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["drift", "--all", "--report-mode", "stdout"],
+        prog_name="gh-manage",
+    )
+    assert result.exit_code == 0
+    assert "SKIPPED" in result.output or "skipped" in result.output.lower()
