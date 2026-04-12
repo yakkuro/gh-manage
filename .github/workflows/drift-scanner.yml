@@ -1,0 +1,30 @@
+name: Drift Scanner
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'   # Every Monday 00:00 UTC (= 09:00 JST)
+  workflow_dispatch:        # Manual trigger for debugging
+
+permissions:
+  issues: write             # Create/update/close drift Issues
+  contents: read            # Read repos.yml from package data
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install gh-manage
+        run: uv tool install git+https://github.com/yakkuro/gh-manage@cli/v0.6.0
+
+      - name: Run drift scanner
+        run: gh-manage drift --all --report-mode issue --severity low
+        env:
+          GH_TOKEN: ${{ secrets.GH_MANAGE_TOKEN }}
