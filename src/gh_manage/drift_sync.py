@@ -632,3 +632,64 @@ def format_markdown_report(findings: tuple[Finding, ...]) -> str:
             lines.append("")
 
     return "\n".join(lines)
+
+
+def format_issue_body(findings: tuple[Finding, ...], repo: str, scan_time: str) -> str:
+    """Format the GitHub Issue body for a drift report.
+
+    Layout:
+      <!-- gh-manage:drift:<repo> -->        (dormant search metadata)
+      <format_markdown_report output>        (the report itself)
+      **Last scan**: <scan_time>
+      > Note: This issue body is auto-updated by gh-manage drift scanner.
+      > Add comments below for manual notes.
+    """
+    markdown = format_markdown_report(findings)
+
+    lines = [
+        f"<!-- gh-manage:drift:{repo} -->",
+        "",
+        markdown,
+        "",
+        f"**Last scan**: {scan_time}",
+        "",
+        "> Note: This issue body is auto-updated by gh-manage drift scanner. "
+        "Add comments below for manual notes.",
+    ]
+    return "\n".join(lines)
+
+
+def format_issue_comment(findings: tuple[Finding, ...], scan_time: str) -> str:
+    """Format a scan run comment with hidden metadata.
+
+    Hidden metadata:
+    - <!-- scan:finding-count:N --> — always present
+    - <!-- scan:zero-findings:<ISO8601> --> — only when N=0
+
+    The 24h auto-close logic parses these from comments to determine
+    whether to close the Issue.
+    """
+    count = len(findings)
+    counts = _count_by_severity(findings)
+
+    lines = [
+        f"## Scan run — {scan_time}",
+        "",
+    ]
+
+    if count == 0:
+        lines.append(f"<!-- scan:zero-findings:{scan_time} -->")
+    lines.append(f"<!-- scan:finding-count:{count} -->")
+    lines.append("")
+
+    if count == 0:
+        lines.append("**0 findings** — no drift detected.")
+    else:
+        summary_parts = []
+        for sev in ("critical", "high", "medium", "low"):
+            c = counts.get(sev, 0)
+            if c > 0:
+                summary_parts.append(f"{c} {sev}")
+        lines.append(f"**{count} findings** ({', '.join(summary_parts)})")
+
+    return "\n".join(lines)
