@@ -483,3 +483,108 @@ def test_protection_diff_to_findings_empty_diff() -> None:
 
     diff = ProtectionDiff(changes=(), downgrades=(), current_raw={}, desired_raw={})
     assert _protection_diff_to_findings(diff, "yakkuro/gh-manage") == ()
+
+
+# Task 9: Golden test (self-dogfood)
+
+
+def test_golden_production_data_zero_drift(mocker: Any, tmp_path: Path) -> None:
+    """Self-dogfood golden test: when the production config is loaded
+    and the mocked API returns the exact same state, run_all_checks
+    returns zero findings.
+
+    This is the "baseline" test — any Phase 8+ change that breaks the
+    identity property (equal state → zero findings) fails here.
+    """
+    from importlib.resources import files
+
+    from gh_manage.drift_sync import (
+        check_labels,
+        check_profile_files,
+        check_protection,
+    )
+    from gh_manage.models.branch_protection import BranchProtectionConfig
+    from gh_manage.models.labels import LabelsConfig
+    from gh_manage.models.profiles import ProfileSpec
+    from gh_manage.protection_sync import build_desired_protection
+
+    # Load bundled configs
+    profile = load_config(
+        Path(str(files("gh_manage.data.profiles") / "python-service.yml")),
+        ProfileSpec,
+    )
+    labels_config = load_config(
+        Path(str(files("gh_manage.data") / "labels.yml")),
+        LabelsConfig,
+    )
+    bp_config = load_config(
+        Path(str(files("gh_manage.data") / "branch-protection.yml")),
+        BranchProtectionConfig,
+    )
+
+    # Build a tmp repo with every profile.files entry materialized from
+    # its template (so check_profile_files sees zero drift).
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    for entry in profile.files:
+        template_root = Path(str(files("gh_manage.data") / "templates"))
+        content = (template_root / entry.source).read_text(encoding="utf-8")
+        local = repo_path / entry.dest
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(content, encoding="utf-8")
+
+    # Mock labels API to return exactly the bundled labels.yml content.
+    from gh_manage.labels_sync import _flatten_desired, _spec_to_label  # type: ignore[attr-defined]
+
+    bundled_labels = [_spec_to_label(spec) for spec in _flatten_desired(labels_config)]
+    mocker.patch(
+        "gh_manage.drift_sync.labels_api.list_labels",
+        return_value=bundled_labels,
+    )
+
+    # Mock protection API to return the exact shape that
+    # build_desired_protection would PUT — that way compute_diff sees
+    # no changes.
+    policy = bp_config.policies[profile.protection_policy]  # type: ignore[index]
+    desired_put_body = build_desired_protection(policy, profile)
+
+    # GitHub's GET response wraps enforce_admins etc. in {enabled: bool}.
+    # For the test, we can pass a synthetic current_raw that normalizes
+    # to the same canonical shape as desired.
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={
+            "enforce_admins": {"enabled": desired_put_body["enforce_admins"]},
+            "required_status_checks": desired_put_body["required_status_checks"],
+            "required_pull_request_reviews": desired_put_body[
+                "required_pull_request_reviews"
+            ],
+            "required_conversation_resolution": {
+                "enabled": desired_put_body["required_conversation_resolution"]
+            },
+            "required_linear_history": {
+                "enabled": desired_put_body["required_linear_history"]
+            },
+            "allow_force_pushes": {"enabled": desired_put_body["allow_force_pushes"]},
+            "allow_deletions": {"enabled": desired_put_body["allow_deletions"]},
+        },
+    )
+
+    ctx = ScanContext(
+        path=repo_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=bp_config,
+    )
+
+    # Run each check individually to make failures easier to diagnose
+    labels_findings = check_labels(ctx)
+    assert labels_findings == (), f"check_labels drift: {labels_findings}"
+
+    protection_findings = check_protection(ctx)
+    assert protection_findings == (), f"check_protection drift: {protection_findings}"
+
+    files_findings = check_profile_files(ctx)
+    assert files_findings == (), f"check_profile_files drift: {files_findings}"
