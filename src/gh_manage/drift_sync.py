@@ -243,8 +243,11 @@ def _labels_diff_to_findings(diff: LabelsDiff, repo: str) -> tuple[Finding, ...]
     return tuple(findings)
 
 
+from gh_manage.github_api import protection as protection_api  # noqa: E402
+from gh_manage.github_client import GhNotFoundError  # noqa: E402
 from gh_manage.protection_sync import (  # noqa: E402
     ProtectionDiff,
+    compute_protection_diff,
 )
 
 
@@ -315,6 +318,39 @@ def check_labels(ctx: ScanContext) -> tuple[Finding, ...]:
     current = labels_api.list_labels(ctx.repo)
     diff = _compute_labels_diff(current, ctx.labels_config, prune=True)
     return _labels_diff_to_findings(diff, ctx.repo)
+
+
+@register_check
+def check_protection(ctx: ScanContext) -> tuple[Finding, ...]:
+    """Drift check: current branch protection vs profile's policy.
+
+    Returns early with an empty tuple if:
+    - ctx.profile.protection_policy is None (opt-out — profile does
+      not manage protection)
+    - ctx.bp_config is None (CLI builder did not load branch-protection.yml)
+
+    Otherwise:
+    1. Look up the policy in ctx.bp_config.policies by name.
+    2. Fetch current protection via protection_api.get_branch_protection
+       on ctx.default_branch. 404 → treat as empty dict.
+    3. Compute diff via protection_sync.compute_protection_diff.
+    4. Pass the diff through _protection_diff_to_findings.
+
+    IO: yes (subprocess via protection_api). Mocked at
+    gh_manage.drift_sync.protection_api.get_branch_protection in
+    scenario tests.
+    """
+    if ctx.profile.protection_policy is None or ctx.bp_config is None:
+        return ()
+
+    policy = ctx.bp_config.policies[ctx.profile.protection_policy]
+    try:
+        current = protection_api.get_branch_protection(ctx.repo, ctx.default_branch)
+    except GhNotFoundError:
+        current = {}
+
+    diff = compute_protection_diff(current, policy, ctx.profile, ctx.default_branch)
+    return _protection_diff_to_findings(diff, ctx.repo)
 
 
 # ========== Report Formatters ==========
