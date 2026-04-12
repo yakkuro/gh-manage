@@ -1,0 +1,40 @@
+name: missing-meta-labels
+description: Profile ships meta/* labels but repo has only type/* labels
+check: labels
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  current_labels:
+    - {name: "fix", color: "d73a4a", description: "Bug fix (fix:)"}
+    - {name: "feat", color: "a2eeef", description: "New feature (feat:)"}
+    - {name: "docs", color: "0075ca", description: "Documentation changes (docs:)"}
+    - {name: "chore", color: "e1e7eb", description: "Maintenance / housekeeping (chore:)"}
+    - {name: "refactor", color: "ffd866", description: "Refactor without behavior change (refactor:)"}
+    - {name: "test", color: "c5def5", description: "Test additions / changes (test:)"}
+    - {name: "ci", color: "b4a5ff", description: "CI/CD changes (ci:)"}
+    - {name: "perf", color: "5319e7", description: "Performance improvements (perf:)"}
+expected_findings:
+  - severity: high
+    check: labels
+    field_path_contains: "duplicate"
+    message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "good first issue"
+    message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "help wanted"
+    message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "invalid"
+    message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "question"
+    message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "wontfix"
+    message_contains: "missing"

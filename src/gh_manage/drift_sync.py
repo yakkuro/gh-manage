@@ -159,11 +159,112 @@ def _filter_by_severity(
 
 
 # ========== Adapters ==========
-# Implementation lands in Tasks 5, 6
+
+from gh_manage.github_api import labels as labels_api  # noqa: E402
+from gh_manage.labels_sync import (  # noqa: E402
+    LabelsDiff,
+    compute_diff as _compute_labels_diff,
+)
+
+
+def _labels_diff_to_findings(diff: LabelsDiff, repo: str) -> tuple[Finding, ...]:
+    """Convert a LabelsDiff into a tuple of Finding objects.
+
+    Severity mapping:
+    - creates (profile has, repo missing)     → high
+    - deletes (repo has, profile missing)     → low (user may have added intentionally)
+    - updates (color/description mismatch)    → medium
+    - renames (label rename in profile)       → medium
+    """
+    findings: list[Finding] = []
+    remediation = "gh manage labels sync . --apply"
+
+    for create in diff.creates:
+        findings.append(
+            Finding(
+                severity="high",
+                check="labels",
+                repo=repo,
+                field_path=f"labels[{create.label.name}]",
+                current_value=None,
+                desired_value=create.label.name,
+                message=f"Label {create.label.name!r} is missing from the repository",
+                remediation=remediation,
+            )
+        )
+    for delete in diff.deletes:
+        findings.append(
+            Finding(
+                severity="low",
+                check="labels",
+                repo=repo,
+                field_path=f"labels[{delete.name}]",
+                current_value=delete.name,
+                desired_value=None,
+                message=(
+                    f"Label {delete.name!r} exists on the repository but is "
+                    f"not defined in labels.yml"
+                ),
+                remediation=None,
+            )
+        )
+    for update in diff.updates:
+        findings.append(
+            Finding(
+                severity="medium",
+                check="labels",
+                repo=repo,
+                field_path=f"labels[{update.label.name}]",
+                current_value="drifted",
+                desired_value=f"color={update.label.color}",
+                message=(
+                    f"Label {update.label.name!r} has drifted (color or "
+                    f"description mismatch)"
+                ),
+                remediation=remediation,
+            )
+        )
+    for rename in diff.renames:
+        findings.append(
+            Finding(
+                severity="medium",
+                check="labels",
+                repo=repo,
+                field_path=f"labels[{rename.old_name}]",
+                current_value=rename.old_name,
+                desired_value=rename.new_label.name,
+                message=(
+                    f"Label {rename.old_name!r} should be renamed to "
+                    f"{rename.new_label.name!r}"
+                ),
+                remediation=remediation,
+            )
+        )
+    return tuple(findings)
 
 
 # ========== Checks ==========
-# Implementation lands in Tasks 5, 7, 8
+
+
+@register_check
+def check_labels(ctx: ScanContext) -> tuple[Finding, ...]:
+    """Drift check: repo labels vs ctx.labels_config.
+
+    Calls labels_api.list_labels(ctx.repo) to fetch the current state,
+    then reuses labels_sync.compute_diff() (with prune=True) and translates
+    the resulting LabelsDiff into Finding objects.
+
+    IO: yes (subprocess via labels_api.list_labels). Mocked at the
+    module-attribute boundary (gh_manage.drift_sync.labels_api.list_labels)
+    in scenario tests.
+
+    `prune=True` is used here — drift scan should report extras so the user
+    can see extras, and the adapter marks them low-severity with no
+    remediation command.
+    """
+    current = labels_api.list_labels(ctx.repo)
+    diff = _compute_labels_diff(current, ctx.labels_config, prune=True)
+    return _labels_diff_to_findings(diff, ctx.repo)
 
 
 # ========== Report Formatters ==========

@@ -3,20 +3,38 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from gh_manage.config import load_config
 from gh_manage.drift_sync import (
     DriftError,
     DriftOutputError,
     Finding,
     ScanContext,
     _CHECKS,
+    _filter_by_severity,
+    _labels_diff_to_findings,
+    check_labels,
     register_check,
     run_all_checks,
 )
+from gh_manage.github_api.labels import Label, Label as LabelInfo
+from gh_manage.labels_sync import (
+    LabelCreate,
+    LabelDelete,
+    LabelsDiff,
+    LabelUpdate,
+)
+from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import CategorySpec, LabelSpec, LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
+from tests.unit.drift.conftest import (
+    DriftScenario,
+    ExpectedFinding,
+    read_template_for,
+)
 
 
 def _make_labels_config() -> LabelsConfig:
@@ -163,7 +181,6 @@ def test_run_all_checks_calls_every_registered_check(tmp_path: Path) -> None:
 
 
 # Filter by severity
-from gh_manage.drift_sync import _filter_by_severity
 
 
 def _f(severity: str) -> Finding:
@@ -218,3 +235,193 @@ def test_drift_scenario_conftest_importable() -> None:
     assert hasattr(conftest, "DriftScenario")
     assert hasattr(conftest, "_load_scenarios")
     assert hasattr(conftest, "read_template_for")
+
+
+# Task 5: check_labels adapter unit tests
+
+
+def test_labels_diff_to_findings_creates_are_high_severity() -> None:  # noqa: E501
+    diff = LabelsDiff(
+        renames=(),
+        creates=(LabelCreate(Label("priority/critical", "b60205", "crit")),),
+        updates=(),
+        deletes=(),
+    )
+    findings = _labels_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert len(findings) == 1
+    assert findings[0].severity == "high"
+    assert findings[0].check == "labels"
+    assert findings[0].repo == "yakkuro/gh-manage"
+    assert "priority/critical" in findings[0].field_path
+    assert "missing" in findings[0].message.lower()
+    assert findings[0].remediation is not None
+    assert "labels sync" in findings[0].remediation
+
+
+def test_labels_diff_to_findings_deletes_are_low_severity() -> None:
+    diff = LabelsDiff(
+        renames=(),
+        creates=(),
+        updates=(),
+        deletes=(LabelDelete("custom/extra"),),
+    )
+    findings = _labels_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert len(findings) == 1
+    assert findings[0].severity == "low"
+    assert "custom/extra" in findings[0].field_path
+    # No remediation for deletes (spec says: don't propose deletion)
+    assert findings[0].remediation is None
+
+
+def test_labels_diff_to_findings_updates_are_medium_severity() -> None:
+    # An update represents a color or description change. In Phase 5's
+    # LabelsDiff, LabelUpdate carries the full Label object — the test
+    # cannot easily distinguish color vs description from the Label
+    # object alone, so the adapter emits severity=medium for all
+    # updates regardless. If the spec later requires color (medium) vs
+    # description (low) distinction, the LabelsDiff model would need
+    # to carry that information.
+    diff = LabelsDiff(
+        renames=(),
+        creates=(),
+        updates=(LabelUpdate(Label("type/bug", "d93f0b", "Something broken")),),
+        deletes=(),
+    )
+    findings = _labels_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert "type/bug" in findings[0].field_path
+
+
+def test_labels_diff_to_findings_empty_diff_emits_no_findings() -> None:
+    diff = LabelsDiff(renames=(), creates=(), updates=(), deletes=())
+    findings = _labels_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert findings == ()
+
+
+# Task 5: test_scenario parametrized function
+
+
+def _matches(actual: Finding, expected: ExpectedFinding) -> bool:
+    if actual.severity != expected.severity:
+        return False
+    if actual.check != expected.check:
+        return False
+    if (
+        expected.field_path_contains
+        and expected.field_path_contains not in actual.field_path
+    ):
+        return False
+    if expected.message_contains and expected.message_contains not in actual.message:
+        return False
+    return True
+
+
+def _resolve_profile_path_for_test(name: str) -> Path:
+    from importlib.resources import files
+
+    return Path(str(files("gh_manage.data.profiles") / f"{name}.yml"))
+
+
+def _resolve_labels_config_path() -> Path:
+    from importlib.resources import files
+
+    return Path(str(files("gh_manage.data") / "labels.yml"))
+
+
+def _resolve_bp_config_path() -> Path:
+    from importlib.resources import files
+
+    return Path(str(files("gh_manage.data") / "branch-protection.yml"))
+
+
+def test_scenario(
+    drift_scenario: tuple[Path, DriftScenario],
+    mocker: Any,
+    tmp_path: Path,
+) -> None:
+    """Test scenario runner. Deferred imports allow Task 5 to run before
+    Task 7/8 implement check_protection and check_profile_files."""
+    # Deferred imports so Task 5 doesn't need check_protection /
+    # check_profile_files to exist yet — they land in Tasks 7 and 8.
+
+    try:
+        from gh_manage.drift_sync import check_protection
+    except ImportError:
+        check_protection = None  # type: ignore[assignment]
+    try:
+        from gh_manage.drift_sync import check_profile_files
+    except ImportError:
+        check_profile_files = None  # type: ignore[assignment]
+
+    _, scenario = drift_scenario
+
+    check_fn = {
+        "labels": check_labels,
+        "protection": check_protection,
+        "profile_files": check_profile_files,
+    }[scenario.check]
+
+    if check_fn is None:
+        pytest.skip(
+            f"Check {scenario.check!r} not yet implemented (scenario: {scenario.name})"
+        )
+
+    # Load the profile and bundled configs
+    profile = load_config(_resolve_profile_path_for_test(scenario.profile), ProfileSpec)
+    labels_config = load_config(_resolve_labels_config_path(), LabelsConfig)
+    bp_config = load_config(_resolve_bp_config_path(), BranchProtectionConfig)
+
+    # Build the tmp repo tree
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    if scenario.inputs.repo_files:
+        for rel_path, content in scenario.inputs.repo_files.items():
+            if content == "__USE_TEMPLATE__":
+                content = read_template_for(scenario.profile, rel_path)
+            target = repo_path / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
+    # Mock API boundaries based on check
+    if scenario.inputs.current_labels is not None:
+        mock_labels = [
+            LabelInfo(
+                name=lbl["name"],
+                color=lbl["color"].lower(),
+                description=lbl.get("description") or "",
+            )
+            for lbl in scenario.inputs.current_labels
+        ]
+        mocker.patch(
+            "gh_manage.drift_sync.labels_api.list_labels",
+            return_value=mock_labels,
+        )
+    if scenario.inputs.current_protection is not None:
+        mocker.patch(
+            "gh_manage.drift_sync.protection_api.get_branch_protection",
+            return_value=scenario.inputs.current_protection,
+        )
+
+    ctx = ScanContext(
+        path=repo_path,
+        repo=scenario.repo,
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=bp_config,
+    )
+
+    findings = check_fn(ctx)
+
+    # Order-independent comparison: every expected must be matched,
+    # and no extras.
+    assert len(findings) == len(scenario.expected_findings), (
+        f"Expected {len(scenario.expected_findings)} findings, "
+        f"got {len(findings)}: {[str(f) for f in findings]}"
+    )
+    for expected in scenario.expected_findings:
+        matches = [f for f in findings if _matches(f, expected)]
+        assert matches, (
+            f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        )
