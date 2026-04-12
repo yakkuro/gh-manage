@@ -146,7 +146,18 @@ def test_register_check_returns_function(tmp_path: Path) -> None:
     _CHECKS.remove(my_check)
 
 
-def test_run_all_checks_calls_every_registered_check(tmp_path: Path) -> None:
+def test_run_all_checks_calls_every_registered_check(
+    tmp_path: Path, mocker: Any
+) -> None:
+    # Mock production check IO boundaries so run_all_checks doesn't hit
+    # real APIs. In CI there's no GH_TOKEN, so production checks (which
+    # are also registered) would fail without these mocks.
+    mocker.patch("gh_manage.drift_sync.labels_api.list_labels", return_value=[])
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={},
+    )
+
     called: list[str] = []
 
     def check_a(ctx: ScanContext) -> tuple[Finding, ...]:
@@ -422,9 +433,9 @@ def test_scenario(
     )
     for expected in scenario.expected_findings:
         matches = [f for f in findings if _matches(f, expected)]
-        assert (
-            matches
-        ), f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        assert matches, (
+            f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        )
 
 
 # Task 6: _protection_diff_to_findings adapter
