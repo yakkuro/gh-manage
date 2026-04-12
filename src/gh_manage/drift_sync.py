@@ -39,6 +39,7 @@ Section map:
 from __future__ import annotations
 
 import hashlib
+import json as _json
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files as _package_files
@@ -500,4 +501,118 @@ def format_stdout_report(findings: tuple[Finding, ...]) -> str:
         f"Summary: {counts['critical']} critical, {counts['high']} high, "
         f"{counts['medium']} medium, {counts['low']} low — {total} findings total."
     )
+    return "\n".join(lines)
+
+
+def format_json_report(findings: tuple[Finding, ...]) -> str:
+    """Render findings as a stable JSON document.
+
+    Shape:
+      {
+        "version": 1,
+        "repo": "owner/repo",
+        "findings": [{...}, ...],
+        "summary": {"critical": N, "high": N, "medium": N, "low": N, "total": N}
+      }
+
+    `version` is a schema version for consumers; bump if the shape
+    changes incompatibly. `repo` is the first finding's repo (all
+    findings in a single scan share the same repo). `findings` is a
+    list of per-finding dicts with every Finding field except
+    `current_value` / `desired_value` serialized via json.dumps
+    defaults (complex types fall back to repr).
+    """
+    repo = findings[0].repo if findings else ""
+    counts = _count_by_severity(findings)
+
+    def _finding_to_dict(f: Finding) -> dict[str, Any]:
+        return {
+            "severity": f.severity,
+            "check": f.check,
+            "repo": f.repo,
+            "field_path": f.field_path,
+            "current_value": f.current_value,
+            "desired_value": f.desired_value,
+            "message": f.message,
+            "remediation": f.remediation,
+        }
+
+    doc = {
+        "version": 1,
+        "repo": repo,
+        "findings": [_finding_to_dict(f) for f in findings],
+        "summary": {
+            "critical": counts["critical"],
+            "high": counts["high"],
+            "medium": counts["medium"],
+            "low": counts["low"],
+            "total": len(findings),
+        },
+    }
+    return _json.dumps(doc, indent=2, default=str)
+
+
+def format_markdown_report(findings: tuple[Finding, ...]) -> str:
+    """Render findings as GitHub-flavored markdown suitable for an
+    Issue body or a standalone report file.
+
+    Layout:
+      # Drift report — `<repo>`
+
+      **Summary**: N critical, N high, N medium, N low — N findings total.
+
+      ## Critical
+
+      ### `check/field_path`
+
+      <message>
+
+      - **Current**: `<current_value>`
+      - **Desired**: `<desired_value>`
+      - **Fix**: `<remediation>`
+
+      ## High
+      ...
+    """
+    if not findings:
+        return "# Drift report\n\n0 findings. No drift detected.\n"
+
+    repo = findings[0].repo
+    counts = _count_by_severity(findings)
+    total = len(findings)
+    grouped = _group_by_severity(findings)
+
+    lines: list[str] = [
+        f"# Drift report — `{repo}`",
+        "",
+        (
+            f"**Summary**: {counts['critical']} critical, {counts['high']} high, "
+            f"{counts['medium']} medium, {counts['low']} low — {total} findings total."
+        ),
+        "",
+    ]
+
+    section_titles = {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+    }
+    for severity in _SEVERITY_ORDER:
+        items = grouped[severity]
+        if not items:
+            continue
+        lines.append(f"## {section_titles[severity]}")
+        lines.append("")
+        for item in items:
+            lines.append(f"### `{item.check}/{item.field_path}`")
+            lines.append("")
+            lines.append(item.message)
+            lines.append("")
+            lines.append(f"- **Current**: `{item.current_value}`")
+            lines.append(f"- **Desired**: `{item.desired_value}`")
+            if item.remediation:
+                lines.append(f"- **Fix**: `{item.remediation}`")
+            lines.append("")
+
     return "\n".join(lines)
