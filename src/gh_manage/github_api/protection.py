@@ -31,9 +31,9 @@ def get_branch_protection(repo: str, branch: str = "main") -> dict[str, Any]:
     result = run_gh_api(f"repos/{repo}/branches/{branch}/protection")
     if result is None:
         return {}
-    assert isinstance(
-        result, dict
-    ), f"Expected dict response, got {type(result).__name__}"
+    assert isinstance(result, dict), (
+        f"Expected dict response, got {type(result).__name__}"
+    )
     return result
 
 

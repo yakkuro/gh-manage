@@ -425,3 +425,61 @@ def test_scenario(
         assert matches, (
             f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
         )
+
+
+# Task 6: _protection_diff_to_findings adapter
+
+
+def test_protection_diff_to_findings_downgrade_is_critical() -> None:
+    from gh_manage.drift_sync import _protection_diff_to_findings
+    from gh_manage.protection_sync import (
+        DowngradeFinding,
+        ProtectionDiff,
+        ProtectionFieldChange,
+    )
+
+    diff = ProtectionDiff(
+        changes=(ProtectionFieldChange("enforce_admins", True, False),),
+        downgrades=(
+            DowngradeFinding(
+                field_path="enforce_admins",
+                current_value=True,
+                desired_value=False,
+                reason="admin enforcement disabled",
+            ),
+        ),
+        current_raw={},
+        desired_raw={},
+    )
+    findings = _protection_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert len(findings) == 1
+    assert findings[0].severity == "critical"
+    assert findings[0].check == "protection"
+    assert "enforce_admins" in findings[0].field_path
+    assert findings[0].remediation is not None
+    assert "protection sync" in findings[0].remediation
+
+
+def test_protection_diff_to_findings_non_downgrade_is_medium() -> None:
+    from gh_manage.drift_sync import _protection_diff_to_findings
+    from gh_manage.protection_sync import ProtectionDiff, ProtectionFieldChange
+
+    # A change that is NOT classified as a downgrade (e.g., upgrade)
+    diff = ProtectionDiff(
+        changes=(ProtectionFieldChange("allow_force_pushes", True, False),),
+        downgrades=(),  # not a downgrade — current was weaker
+        current_raw={},
+        desired_raw={},
+    )
+    findings = _protection_diff_to_findings(diff, "yakkuro/gh-manage")
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert "allow_force_pushes" in findings[0].field_path
+
+
+def test_protection_diff_to_findings_empty_diff() -> None:
+    from gh_manage.drift_sync import _protection_diff_to_findings
+    from gh_manage.protection_sync import ProtectionDiff
+
+    diff = ProtectionDiff(changes=(), downgrades=(), current_raw={}, desired_raw={})
+    assert _protection_diff_to_findings(diff, "yakkuro/gh-manage") == ()

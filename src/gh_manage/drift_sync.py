@@ -243,6 +243,56 @@ def _labels_diff_to_findings(diff: LabelsDiff, repo: str) -> tuple[Finding, ...]
     return tuple(findings)
 
 
+from gh_manage.protection_sync import (  # noqa: E402
+    ProtectionDiff,
+)
+
+
+def _protection_diff_to_findings(
+    diff: ProtectionDiff, repo: str
+) -> tuple[Finding, ...]:
+    """Convert a ProtectionDiff into a tuple of Finding objects.
+
+    Severity mapping:
+    - downgrade (field in diff.downgrades)      → critical
+    - non-downgrade change (e.g., upgrade side) → medium
+
+    A change is a downgrade if its `field_path` appears in
+    `diff.downgrades`. All other changes are medium severity.
+    """
+    downgrade_paths = {d.field_path for d in diff.downgrades}
+    remediation = "gh manage protection sync . --profile <profile> --apply"
+
+    findings: list[Finding] = []
+    for change in diff.changes:
+        is_downgrade = change.field_path in downgrade_paths
+        severity: Severity = "critical" if is_downgrade else "medium"
+
+        if is_downgrade:
+            downgrade_entry = next(
+                d for d in diff.downgrades if d.field_path == change.field_path
+            )
+            message = (
+                f"Protection weakened on {change.field_path}: {downgrade_entry.reason}"
+            )
+        else:
+            message = f"Protection drift on {change.field_path}"
+
+        findings.append(
+            Finding(
+                severity=severity,
+                check="protection",
+                repo=repo,
+                field_path=change.field_path,
+                current_value=change.current_value,
+                desired_value=change.desired_value,
+                message=message,
+                remediation=remediation,
+            )
+        )
+    return tuple(findings)
+
+
 # ========== Checks ==========
 
 
