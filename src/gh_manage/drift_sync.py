@@ -358,10 +358,21 @@ def check_protection(ctx: ScanContext) -> tuple[Finding, ...]:
 
 def _read_template_content(source: str) -> str:
     """Read a template file from the bundled gh_manage.data.templates
-    package data. `source` is relative path like "ci/python-ci.yml"."""
+    package data. `source` is relative path like "ci/python-ci.yml".
+
+    Raises DriftError with actionable context if the template file is
+    missing or unreadable (silent-failure-hunter HIGH #1 fix).
+    """
     templates_root = Path(str(_package_files("gh_manage.data") / "templates"))
     template_path = templates_root / source
-    return template_path.read_text(encoding="utf-8")
+    try:
+        return template_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise DriftError(
+            f"Cannot read bundled template {source!r} at {template_path}: {e}. "
+            f"This may indicate a packaging bug — the template should be "
+            f"bundled in gh_manage.data.templates."
+        ) from e
 
 
 def _content_hash(text: str) -> str:
@@ -414,7 +425,12 @@ def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
             )
             continue
 
-        local_content = local.read_text(encoding="utf-8")
+        try:
+            local_content = local.read_text(encoding="utf-8")
+        except OSError as e:
+            raise DriftError(
+                f"Cannot read {entry.dest!r} at {local}: {e}. Check file permissions."
+            ) from e
         local_hash = _content_hash(local_content)
         if local_hash == template_hash:
             continue
