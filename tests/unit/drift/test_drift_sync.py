@@ -160,3 +160,50 @@ def test_run_all_checks_calls_every_registered_check(tmp_path: Path) -> None:
     finally:
         _CHECKS.remove(check_a)
         _CHECKS.remove(check_b)
+
+
+# Filter by severity
+from gh_manage.drift_sync import _filter_by_severity
+
+
+def _f(severity: str) -> Finding:
+    return Finding(
+        severity=severity,  # type: ignore[arg-type]
+        check="test",
+        repo="yakkuro/gh-manage",
+        field_path="x",
+        current_value=None,
+        desired_value="y",
+        message="m",
+    )
+
+
+def test_filter_by_severity_keeps_matching_and_higher() -> None:
+    findings = (_f("critical"), _f("high"), _f("medium"), _f("low"))
+    result = _filter_by_severity(findings, "high")
+    assert len(result) == 2
+    assert result[0].severity == "critical"
+    assert result[1].severity == "high"
+
+
+def test_filter_by_severity_empty_input() -> None:
+    assert _filter_by_severity((), "low") == ()
+
+
+def test_filter_by_severity_low_keeps_everything() -> None:
+    findings = (_f("critical"), _f("high"), _f("medium"), _f("low"))
+    result = _filter_by_severity(findings, "low")
+    assert len(result) == 4
+
+
+def test_filter_by_severity_critical_keeps_only_critical() -> None:
+    findings = (_f("critical"), _f("high"), _f("medium"), _f("low"))
+    result = _filter_by_severity(findings, "critical")
+    assert len(result) == 1
+    assert result[0].severity == "critical"
+
+
+def test_filter_by_severity_preserves_order() -> None:
+    findings = (_f("low"), _f("high"), _f("low"), _f("critical"))
+    result = _filter_by_severity(findings, "high")
+    assert [f.severity for f in result] == ["high", "critical"]

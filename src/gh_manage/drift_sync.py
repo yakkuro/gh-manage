@@ -143,6 +143,21 @@ def run_all_checks(ctx: ScanContext) -> tuple[Finding, ...]:
     return tuple(chain.from_iterable(check(ctx) for check in _CHECKS))
 
 
+_SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+
+
+def _filter_by_severity(
+    findings: tuple[Finding, ...], min_severity: Severity
+) -> tuple[Finding, ...]:
+    """Filter findings to those with severity >= min_severity.
+
+    Hierarchy (highest to lowest): critical > high > medium > low.
+    Input order is preserved for stable reporting.
+    """
+    threshold = _SEVERITY_RANK[min_severity]
+    return tuple(f for f in findings if _SEVERITY_RANK[f.severity] >= threshold)
+
+
 # ========== Adapters ==========
 # Implementation lands in Tasks 5, 6
 
