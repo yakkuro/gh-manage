@@ -207,3 +207,14 @@ def test_filter_by_severity_preserves_order() -> None:
     findings = (_f("low"), _f("high"), _f("low"), _f("critical"))
     result = _filter_by_severity(findings, "high")
     assert [f.severity for f in result] == ["high", "critical"]
+
+
+# Conftest smoke test
+def test_drift_scenario_conftest_importable() -> None:
+    """Sanity check: conftest module imports cleanly and exposes the
+    DriftScenario model."""
+    from tests.unit.drift import conftest
+
+    assert hasattr(conftest, "DriftScenario")
+    assert hasattr(conftest, "_load_scenarios")
+    assert hasattr(conftest, "read_template_for")
