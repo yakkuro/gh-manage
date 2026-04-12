@@ -1,0 +1,16 @@
+name: claude-md-modified
+description: "Local CLAUDE.md has been user-edited (skip_if_exists=true) — low severity informational"
+check: profile_files
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  repo_files:
+    CLAUDE.md: |
+      # My customized CLAUDE.md
+      User-specific instructions that differ from the template.
+    .github/workflows/ci.yml: "__USE_TEMPLATE__"
+expected_findings:
+  - severity: low
+    check: profile_files
+    field_path_contains: "CLAUDE.md"
+    message_contains: "drifted"

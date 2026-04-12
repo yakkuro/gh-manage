@@ -1,0 +1,26 @@
+name: color-mismatch
+description: Repo label has wrong color
+check: labels
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  current_labels:
+    - {name: "fix", color: "000000", description: "Bug fix (fix:)"}
+    - {name: "feat", color: "a2eeef", description: "New feature (feat:)"}
+    - {name: "docs", color: "0075ca", description: "Documentation changes (docs:)"}
+    - {name: "chore", color: "e1e7eb", description: "Maintenance / housekeeping (chore:)"}
+    - {name: "refactor", color: "ffd866", description: "Refactor without behavior change (refactor:)"}
+    - {name: "test", color: "c5def5", description: "Test additions / changes (test:)"}
+    - {name: "ci", color: "b4a5ff", description: "CI/CD changes (ci:)"}
+    - {name: "perf", color: "5319e7", description: "Performance improvements (perf:)"}
+    - {name: "duplicate", color: "cfd3d7", description: "This issue or PR already exists"}
+    - {name: "good first issue", color: "7057ff", description: "Good for newcomers"}
+    - {name: "help wanted", color: "008672", description: "Extra attention is needed"}
+    - {name: "invalid", color: "e4e669", description: "Not actionable"}
+    - {name: "question", color: "d876e3", description: "Further information is requested"}
+    - {name: "wontfix", color: "ffffff", description: "This will not be worked on"}
+expected_findings:
+  - severity: medium
+    check: labels
+    field_path_contains: "fix"
+    message_contains: "drifted"

@@ -1,0 +1,26 @@
+name: reviews-removed
+description: "Current protection has required_pull_request_reviews=null but policy requires it"
+check: protection
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  current_protection:
+    enforce_admins:
+      enabled: false
+    required_status_checks:
+      strict: true
+      contexts: []
+    required_pull_request_reviews: null
+    required_conversation_resolution:
+      enabled: true
+    required_linear_history:
+      enabled: true
+    allow_force_pushes:
+      enabled: false
+    allow_deletions:
+      enabled: false
+expected_findings:
+  - severity: medium
+    check: protection
+    field_path_contains: required_pull_request_reviews
+    message_contains: drift
