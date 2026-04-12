@@ -6,3 +6,15 @@ repos:
     profile: python-service
   - name: yakkuro/llm-kb
     profile: python-service
+  - name: yakkuro/rtvc-bench
+    profile: python-service
+  - name: yakkuro/scenario-engine
+    profile: python-service
+  - name: yakkuro/tts
+    profile: python-service
+  - name: yakkuro/vox-speak
+    profile: python-service
+  - name: yakkuro/nade-nade
+    profile: python-service
+  - name: yakkuro/picshop
+    profile: python-service
