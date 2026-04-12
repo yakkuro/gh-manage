@@ -18,6 +18,7 @@ from gh_manage.drift_sync import (
     _labels_diff_to_findings,
     check_labels,
     register_check,
+    resolve_drift_issue,
     run_all_checks,
 )
 from gh_manage.github_api.labels import Label, Label as LabelInfo
@@ -433,9 +434,9 @@ def test_scenario(
     )
     for expected in scenario.expected_findings:
         matches = [f for f in findings if _matches(f, expected)]
-        assert (
-            matches
-        ), f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        assert matches, (
+            f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        )
 
 
 # Task 6: _protection_diff_to_findings adapter
@@ -497,6 +498,81 @@ def test_protection_diff_to_findings_empty_diff() -> None:
 
 
 # Task 9: Golden test (self-dogfood)
+
+
+# Task 5: resolve_drift_issue state machine
+
+
+def test_resolve_drift_issue_creates_when_no_existing(mocker: Any) -> None:
+    mocker.patch(
+        "gh_manage.drift_sync.issues_api.search_drift_issue", return_value=None
+    )
+    mocker.patch("gh_manage.drift_sync.issues_api.ensure_drift_label")
+    mock_create = mocker.patch(
+        "gh_manage.drift_sync.issues_api.create_issue",
+        return_value={"number": 42, "html_url": "https://..."},
+    )
+    mock_comment = mocker.patch("gh_manage.drift_sync.issues_api.add_issue_comment")
+
+    findings = (Finding("high", "labels", "yakkuro/gh-manage", "x", None, "y", "m"),)
+    result = resolve_drift_issue(findings, "yakkuro/gh-manage", "2026-04-12T09:00:00Z")
+    assert "Created" in result or "created" in result.lower()
+    mock_create.assert_called_once()
+    mock_comment.assert_called_once()
+
+
+def test_resolve_drift_issue_updates_existing(mocker: Any) -> None:
+    mocker.patch(
+        "gh_manage.drift_sync.issues_api.search_drift_issue",
+        return_value={"number": 42},
+    )
+    mocker.patch("gh_manage.drift_sync.issues_api.ensure_drift_label")
+    mock_update = mocker.patch("gh_manage.drift_sync.issues_api.update_issue_body")
+    mock_comment = mocker.patch("gh_manage.drift_sync.issues_api.add_issue_comment")
+    mocker.patch("gh_manage.drift_sync.issues_api.get_issue_comments", return_value=[])
+
+    findings = (Finding("high", "labels", "yakkuro/gh-manage", "x", None, "y", "m"),)
+    result = resolve_drift_issue(findings, "yakkuro/gh-manage", "2026-04-12T09:00:00Z")
+    assert "Updated" in result or "updated" in result.lower()
+    mock_update.assert_called_once()
+    mock_comment.assert_called_once()
+
+
+def test_resolve_drift_issue_closes_on_24h_rule(mocker: Any) -> None:
+    mocker.patch(
+        "gh_manage.drift_sync.issues_api.search_drift_issue",
+        return_value={"number": 42},
+    )
+    mocker.patch("gh_manage.drift_sync.issues_api.ensure_drift_label")
+    mocker.patch("gh_manage.drift_sync.issues_api.update_issue_body")
+    mocker.patch("gh_manage.drift_sync.issues_api.add_issue_comment")
+    mock_close = mocker.patch("gh_manage.drift_sync.issues_api.close_issue")
+    # Return comments that satisfy 24h rule
+    mocker.patch(
+        "gh_manage.drift_sync.issues_api.get_issue_comments",
+        return_value=[
+            {
+                "body": "<!-- scan:zero-findings:2026-04-12T09:00:00+00:00 -->\n<!-- scan:finding-count:0 -->"
+            },
+            {
+                "body": "<!-- scan:zero-findings:2026-04-05T09:00:00+00:00 -->\n<!-- scan:finding-count:0 -->"
+            },
+        ],
+    )
+
+    result = resolve_drift_issue((), "yakkuro/gh-manage", "2026-04-12T09:00:00Z")
+    assert "Closed" in result or "closed" in result.lower()
+    mock_close.assert_called_once()
+
+
+def test_resolve_drift_issue_noop_zero_findings_no_issue(mocker: Any) -> None:
+    mocker.patch(
+        "gh_manage.drift_sync.issues_api.search_drift_issue", return_value=None
+    )
+    mocker.patch("gh_manage.drift_sync.issues_api.ensure_drift_label")
+
+    result = resolve_drift_issue((), "yakkuro/gh-manage", "2026-04-12T09:00:00Z")
+    assert "No drift" in result or "no drift" in result.lower()
 
 
 def test_golden_production_data_zero_drift(mocker: Any, tmp_path: Path) -> None:

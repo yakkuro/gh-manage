@@ -165,6 +165,7 @@ def _filter_by_severity(
 
 # ========== Adapters ==========
 
+from gh_manage.github_api import issues as issues_api  # noqa: E402
 from gh_manage.github_api import labels as labels_api  # noqa: E402
 from gh_manage.labels_sync import (  # noqa: E402
     LabelsDiff,
@@ -738,3 +739,57 @@ def should_close_issue(comments: list[dict[str, Any]]) -> bool:
     # timestamps[0] is newest, timestamps[1] is second newest
     gap = timestamps[0] - timestamps[1]
     return gap >= timedelta(hours=24)
+
+
+_DRIFT_ISSUE_TITLE_TEMPLATE = "[gh-manage drift] {repo}"
+_DRIFT_LABEL = "gh-manage:drift"
+
+
+def resolve_drift_issue(
+    findings: tuple[Finding, ...],
+    repo: str,
+    scan_time: str,
+) -> str:
+    """Issue state machine: search → create/update/close.
+
+    Returns a human-readable status string for CLI output.
+    """
+    issues_api.ensure_drift_label(repo)
+    existing = issues_api.search_drift_issue(repo)
+    has_findings = len(findings) > 0
+
+    if existing is None:
+        # No open Issue
+        if not has_findings:
+            return f"No drift detected for {repo}. No Issue created."
+        # Create new Issue
+        body = format_issue_body(findings, repo, scan_time)
+        comment = format_issue_comment(findings, scan_time)
+        title = _DRIFT_ISSUE_TITLE_TEMPLATE.format(repo=repo)
+        issue = issues_api.create_issue(repo, title, body, [_DRIFT_LABEL])
+        issues_api.add_issue_comment(repo, issue["number"], comment)
+        return f"Created issue #{issue['number']} on {repo} ({len(findings)} findings)"
+
+    issue_number = existing["number"]
+
+    # Update existing Issue
+    body = format_issue_body(findings, repo, scan_time)
+    comment = format_issue_comment(findings, scan_time)
+    issues_api.update_issue_body(repo, issue_number, body)
+    issues_api.add_issue_comment(repo, issue_number, comment)
+
+    if not has_findings:
+        # Check 24h close rule
+        comments = issues_api.get_issue_comments(repo, issue_number, per_page=5)
+        if should_close_issue(comments):
+            issues_api.close_issue(repo, issue_number)
+            issues_api.add_issue_comment(
+                repo,
+                issue_number,
+                f"## Auto-closed — {scan_time}\n\n"
+                f"Zero drift detected on 2 consecutive scans ≥24h apart. "
+                f"If drift recurs, a new Issue will be created.",
+            )
+            return f"Closed issue #{issue_number} on {repo} (zero drift, 24h rule satisfied)"
+
+    return f"Updated issue #{issue_number} on {repo} ({len(findings)} findings)"
