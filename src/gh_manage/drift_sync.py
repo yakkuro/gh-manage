@@ -689,8 +689,8 @@ def format_issue_comment(findings: tuple[Finding, ...], scan_time: str) -> str:
         lines.append("**0 findings** — no drift detected.")
     else:
         summary_parts = []
-        for sev in ("critical", "high", "medium", "low"):
-            c = counts.get(sev, 0)
+        for sev in _SEVERITY_ORDER:
+            c = counts[sev]
             if c > 0:
                 summary_parts.append(f"{c} {sev}")
         lines.append(f"**{count} findings** ({', '.join(summary_parts)})")

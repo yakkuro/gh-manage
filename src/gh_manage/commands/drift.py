@@ -244,7 +244,14 @@ def _scan_all_repos(
             if report_mode in ("stdout", "json", "markdown-file"):
                 click.echo(result_str)
             results.append(f"  {entry.name}: OK")
-        except GhError as e:
+        except (
+            GhError,
+            ConfigError,
+            GitError,
+            ProfileError,
+            ProtectionError,
+            DriftError,
+        ) as e:
             results.append(f"  {entry.name}: FAILED ({e})")
             failed += 1
 
