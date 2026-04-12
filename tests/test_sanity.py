@@ -8,7 +8,7 @@ import gh_manage
 def test_package_version_is_defined() -> None:
     assert hasattr(gh_manage, "__version__")
     assert isinstance(gh_manage.__version__, str)
-    assert gh_manage.__version__ == "0.5.0"
+    assert gh_manage.__version__ == "0.6.0"
 
 
 def test_cli_module_is_importable() -> None:
