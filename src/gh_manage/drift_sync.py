@@ -40,8 +40,10 @@ from __future__ import annotations
 
 import hashlib
 import json as _json
+import re as _re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from importlib.resources import files as _package_files
 from itertools import chain
 from pathlib import Path
@@ -693,3 +695,46 @@ def format_issue_comment(findings: tuple[Finding, ...], scan_time: str) -> str:
         lines.append(f"**{count} findings** ({', '.join(summary_parts)})")
 
     return "\n".join(lines)
+
+
+_ZERO_FINDINGS_RE = _re.compile(r"<!-- scan:zero-findings:(\S+) -->")
+
+
+def parse_zero_findings_timestamps(
+    comments: list[dict[str, Any]],
+) -> list[datetime]:
+    """Parse <!-- scan:zero-findings:<ISO8601> --> from comment bodies.
+
+    Returns a list of datetime objects (newest first, matching the
+    comment order from get_issue_comments which returns newest first).
+    Malformed timestamps are silently skipped.
+    """
+    timestamps: list[datetime] = []
+    for comment in comments:
+        body = comment.get("body", "")
+        match = _ZERO_FINDINGS_RE.search(body)
+        if match:
+            try:
+                ts = datetime.fromisoformat(match.group(1))
+                timestamps.append(ts)
+            except ValueError:
+                # Malformed timestamp — skip
+                continue
+    return timestamps
+
+
+def should_close_issue(comments: list[dict[str, Any]]) -> bool:
+    """Check if the 24h double-check rule is satisfied.
+
+    Rule: the most recent 2 scan comments with zero-findings metadata
+    must have timestamps ≥ 24h apart. If fewer than 2 zero-findings
+    comments exist, or if the gap is < 24h, return False.
+
+    Comments are expected newest-first (from get_issue_comments).
+    """
+    timestamps = parse_zero_findings_timestamps(comments)
+    if len(timestamps) < 2:
+        return False
+    # timestamps[0] is newest, timestamps[1] is second newest
+    gap = timestamps[0] - timestamps[1]
+    return gap >= timedelta(hours=24)
