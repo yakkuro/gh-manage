@@ -1,0 +1,21 @@
+name: ci-yml-drifted
+description: "Local ci.yml content differs from template (skip_if_exists=false) — medium severity"
+check: profile_files
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  repo_files:
+    CLAUDE.md: "__USE_TEMPLATE__"
+    .github/workflows/ci.yml: |
+      name: Customized CI
+      on: [push]
+      jobs:
+        test:
+          runs-on: ubuntu-latest
+          steps:
+            - run: echo "custom"
+expected_findings:
+  - severity: medium
+    check: profile_files
+    field_path_contains: ".github/workflows/ci.yml"
+    message_contains: "drifted"

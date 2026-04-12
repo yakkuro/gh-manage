@@ -1,0 +1,14 @@
+name: missing-file
+description: "ci.yml is missing from the repo (not skip_if_exists) — medium severity"
+check: profile_files
+repo: yakkuro/test-fixture
+profile: python-service
+inputs:
+  repo_files:
+    CLAUDE.md: "__USE_TEMPLATE__"
+    # .github/workflows/ci.yml intentionally missing
+expected_findings:
+  - severity: medium
+    check: profile_files
+    field_path_contains: ".github/workflows/ci.yml"
+    message_contains: "missing"

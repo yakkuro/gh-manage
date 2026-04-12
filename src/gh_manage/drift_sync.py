@@ -38,8 +38,10 @@ Section map:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.resources import files as _package_files
 from itertools import chain
 from pathlib import Path
 from typing import Any, Literal
@@ -351,6 +353,90 @@ def check_protection(ctx: ScanContext) -> tuple[Finding, ...]:
 
     diff = compute_protection_diff(current, policy, ctx.profile, ctx.default_branch)
     return _protection_diff_to_findings(diff, ctx.repo)
+
+
+def _read_template_content(source: str) -> str:
+    """Read a template file from the bundled gh_manage.data.templates
+    package data. `source` is relative path like "ci/python-ci.yml"."""
+    templates_root = Path(str(_package_files("gh_manage.data") / "templates"))
+    template_path = templates_root / source
+    return template_path.read_text(encoding="utf-8")
+
+
+def _content_hash(text: str) -> str:
+    """Compute SHA256 hex digest of a string."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@register_check
+def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
+    """Drift check: local repo files vs profile's template files.
+
+    For each entry in ctx.profile.files:
+    - Read the template content from gh_manage.data.templates/<source>.
+    - Check if ctx.path / entry.dest exists.
+      - Missing + skip_if_exists=False → severity=medium, "missing file"
+      - Missing + skip_if_exists=True  → no finding (user opted out)
+    - Compare content hashes:
+      - Match → no finding
+      - Mismatch + skip_if_exists=False → severity=medium, "content drifted"
+      - Mismatch + skip_if_exists=True  → severity=low, "content drifted" (informational)
+
+    IO: yes (filesystem reads). Tests inject scenario state via tmp_path
+    in the conftest `drift_scenario` fixture.
+    """
+    findings: list[Finding] = []
+    remediation_apply = f"gh manage apply . --profile {ctx.profile.name} --apply"
+
+    for entry in ctx.profile.files:
+        local = ctx.path / entry.dest
+        template_content = _read_template_content(entry.source)
+        template_hash = _content_hash(template_content)
+
+        if not local.exists():
+            if entry.skip_if_exists:
+                continue
+            findings.append(
+                Finding(
+                    severity="medium",
+                    check="profile_files",
+                    repo=ctx.repo,
+                    field_path=entry.dest,
+                    current_value=None,
+                    desired_value=f"<template {entry.source}>",
+                    message=(
+                        f"Profile file {entry.dest!r} is missing from the "
+                        f"repository (template: {entry.source!r})"
+                    ),
+                    remediation=remediation_apply,
+                )
+            )
+            continue
+
+        local_content = local.read_text(encoding="utf-8")
+        local_hash = _content_hash(local_content)
+        if local_hash == template_hash:
+            continue
+
+        # Content mismatch
+        severity: Severity = "low" if entry.skip_if_exists else "medium"
+        findings.append(
+            Finding(
+                severity=severity,
+                check="profile_files",
+                repo=ctx.repo,
+                field_path=entry.dest,
+                current_value=f"hash={local_hash[:12]}",
+                desired_value=f"hash={template_hash[:12]}",
+                message=(
+                    f"Profile file {entry.dest!r} has drifted from the "
+                    f"template {entry.source!r}"
+                    + (" (user-editable)" if entry.skip_if_exists else "")
+                ),
+                remediation=remediation_apply if not entry.skip_if_exists else None,
+            )
+        )
+    return tuple(findings)
 
 
 # ========== Report Formatters ==========
