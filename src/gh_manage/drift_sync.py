@@ -440,4 +440,64 @@ def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
 
 
 # ========== Report Formatters ==========
-# Implementation lands in Tasks 10, 11
+
+
+_SEVERITY_ORDER: tuple[Severity, ...] = ("critical", "high", "medium", "low")
+
+
+def _group_by_severity(
+    findings: tuple[Finding, ...],
+) -> dict[Severity, list[Finding]]:
+    grouped: dict[Severity, list[Finding]] = {s: [] for s in _SEVERITY_ORDER}
+    for f in findings:
+        grouped[f.severity].append(f)
+    return grouped
+
+
+def _count_by_severity(findings: tuple[Finding, ...]) -> dict[Severity, int]:
+    counts: dict[Severity, int] = {s: 0 for s in _SEVERITY_ORDER}
+    for f in findings:
+        counts[f.severity] += 1
+    return counts
+
+
+def format_stdout_report(findings: tuple[Finding, ...]) -> str:
+    """Render findings as a human-readable stdout report.
+
+    Layout:
+      Drift report for <repo>
+
+        [CRITICAL] <check>/<field_path>
+          <message>
+          Fix: <remediation>
+
+        [HIGH] ...
+
+      Summary: N critical, N high, N medium, N low — N findings total.
+
+    When findings is empty, emits "No drift detected." and a summary line.
+    """
+    if not findings:
+        return "No drift detected. 0 findings."
+
+    grouped = _group_by_severity(findings)
+    counts = _count_by_severity(findings)
+    total = len(findings)
+    repo = findings[0].repo  # all findings share the same repo in a single scan
+
+    lines: list[str] = [f"Drift report for {repo}", ""]
+    for severity in _SEVERITY_ORDER:
+        items = grouped[severity]
+        if not items:
+            continue
+        for item in items:
+            lines.append(f"  [{severity.upper()}] {item.check}/{item.field_path}")
+            lines.append(f"    {item.message}")
+            if item.remediation:
+                lines.append(f"    Fix: {item.remediation}")
+            lines.append("")
+    lines.append(
+        f"Summary: {counts['critical']} critical, {counts['high']} high, "
+        f"{counts['medium']} medium, {counts['low']} low — {total} findings total."
+    )
+    return "\n".join(lines)
