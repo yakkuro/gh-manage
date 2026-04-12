@@ -422,9 +422,9 @@ def test_scenario(
     )
     for expected in scenario.expected_findings:
         matches = [f for f in findings if _matches(f, expected)]
-        assert matches, (
-            f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
-        )
+        assert (
+            matches
+        ), f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
 
 
 # Task 6: _protection_diff_to_findings adapter
