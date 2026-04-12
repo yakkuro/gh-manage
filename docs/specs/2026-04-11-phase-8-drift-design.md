@@ -21,6 +21,7 @@
 - [ ] All 3 checks return `tuple[Finding, ...]` and are independently testable
 - [ ] `_handle_errors` decorator in `commands/drift.py` catches `(GhError, ConfigError, GitError, ProfileError, ProtectionError, DriftError)`
 - [ ] Path traversal defense in `_resolve_profile_path` follows Phase 6/7 pattern (regex pre-filter + `Path.resolve()` + `is_relative_to()` check)
+- [ ] **Default branch is resolved dynamically** via `gh api repos/<owner>/<repo> --jq .default_branch` — no hardcoded `"main"` assumption. `ScanContext` stores the resolved branch and `check_protection` uses it instead of a literal.
 - [ ] `gh manage drift` always exits 0 when the scan completes successfully, regardless of findings count
 - [ ] Production check on `gh-manage` itself (golden test): `check_labels + check_protection + check_profile_files` against bundled production data returns zero findings
 - [ ] Tag `cli/v0.5.0` points at the bump commit, GitHub release published, install smoke test passes
@@ -104,12 +105,15 @@ checks が必要とする入力を 1 束にして渡す:
 class ScanContext:
     path: Path                        # local repo root (for file checks)
     repo: str                         # "owner/repo" (for API checks)
+    default_branch: str               # resolved via `gh api repos/<owner>/<repo> --jq .default_branch`
     profile: ProfileSpec              # loaded profile
     labels_config: LabelsConfig       # loaded bundled labels.yml
     bp_config: BranchProtectionConfig | None  # None if profile.protection_policy is None
 ```
 
 Checks は `ctx` から必要な情報だけを pull する。checks は互いを知らない(registry pattern)。
+
+**`default_branch` resolution**: `gh api repos/<owner>/<repo>` のレスポンスから `default_branch` フィールドを抽出する薄い helper を `github_api/repo_info.py` に追加(または既存の `github_client.run_gh_api` を直接呼ぶ)。MVP では `check_protection` のみ `ctx.default_branch` を使う(Classic Branch Protection は branch per policy なので。ラベルは repo スコープで branch 関係なし)。API 呼び出しは CLI 側で `ScanContext` を組む時に 1 回だけ実行し、checks には渡すだけ。
 
 ### IO 境界
 
@@ -283,18 +287,23 @@ gh manage drift [<path>] --profile <name>
 4. owner_repo = git_cli.get_origin_owner_repo(target)
    → "yakkuro/gh-manage"
 
-5. Config loading
+5. Default branch resolution (1 API call)
+   default_branch = repo_info.get_default_branch(owner_repo)
+                    # gh api repos/yakkuro/gh-manage --jq .default_branch
+                    → "main" (or "develop", "master", etc. per repo)
+
+6. Config loading
    profile       = load_config(_resolve_profile_path("python-service"), ProfileSpec)
    labels_config = load_config(_resolve_default_labels_path(), LabelsConfig)
    bp_config     = load_config(_resolve_branch_protection_path(), BranchProtectionConfig)
                    # profile.protection_policy が None なら bp_config も None
 
-6. ctx = ScanContext(
-       path=target, repo="yakkuro/gh-manage",
+7. ctx = ScanContext(
+       path=target, repo="yakkuro/gh-manage", default_branch=default_branch,
        profile=profile, labels_config=labels_config, bp_config=bp_config,
    )
 
-7. findings = run_all_checks(ctx)
+8. findings = run_all_checks(ctx)
 
    check_labels(ctx):
      current = labels_api.list_labels(ctx.repo)
@@ -303,13 +312,15 @@ gh manage drift [<path>] --profile <name>
 
    check_protection(ctx):
      if ctx.profile.protection_policy is None:
-         return ()
+         return ()                     # explicit opt-out: profile doesn't manage protection
+     assert ctx.bp_config is not None  # precondition: CLI builder guarantees bp_config is
+                                       # present whenever profile.protection_policy is set
      policy = ctx.bp_config.policies[ctx.profile.protection_policy]
      try:
-         current = protection_api.get_branch_protection(ctx.repo, "main")
+         current = protection_api.get_branch_protection(ctx.repo, ctx.default_branch)
      except GhNotFoundError:
          current = {}
-     diff = compute_protection_diff(current, policy, ctx.profile, "main")
+     diff = compute_protection_diff(current, policy, ctx.profile, ctx.default_branch)
      return _protection_diff_to_findings(diff, ctx.repo)
 
    check_profile_files(ctx):
@@ -325,17 +336,17 @@ gh manage drift [<path>] --profile <name>
              findings.append(content_mismatch_finding)
      return tuple(findings)
 
-8. filtered = _filter_by_severity(all_findings, min_severity="high")
+9. filtered = _filter_by_severity(all_findings, min_severity="high")
    階層: critical > high > medium > low
 
-9. Format selection
-   match report_mode:
-       "stdout"        → format_stdout_report(filtered)
-       "json"          → format_json_report(filtered)
-       "markdown-file" → format_markdown_report(filtered)
-   rendered = <str>
+10. Format selection
+    match report_mode:
+        "stdout"        → format_stdout_report(filtered)
+        "json"          → format_json_report(filtered)
+        "markdown-file" → format_markdown_report(filtered)
+    rendered = <str>
 
-10. Output destination
+11. Output destination
     if output is None:
         click.echo(rendered)
     else:
@@ -349,15 +360,32 @@ gh manage drift [<path>] --profile <name>
             ) from e
         click.echo(f"Report written to {output}")
 
-11. return  # exit 0 always
+12. return  # exit 0 always
 ```
+
+### `profile.protection_policy` の 2 ケースの違い
+
+drift scanner は profile.protection_policy について **2 つの異なるケース**を扱う。混同しないこと:
+
+1. **Opt-out(エラーではない)**: `profile.protection_policy is None`
+   - Profile が明示的に branch protection を管理しないと宣言している
+   - `check_protection` は即座に `()` を返す
+   - `ScanContext.bp_config` も `None`(CLI builder で `branch-protection.yml` をロードしない)
+   - 例: docs-only リポなど、protection が不要なケース
+
+2. **Misconfiguration(fail-fast)**: `profile.protection_policy = "solo-default"` だが `bp_config.policies` に `"solo-default"` が存在しない
+   - Profile が参照する policy name が `branch-protection.yml` に定義されていない
+   - CLI の `ScanContext` 構築時点で `ProtectionPolicyNotFoundError` を raise し、check_protection に到達する前に abort
+   - エラーメッセージには利用可能な policy 名一覧を含める(Phase 7 の `_load_profile_and_policy` と同じ pattern)
+
+この 2 ケースを分離することで、「profile が protection を管理しない」と「profile が不正な policy を指定している」を区別できる。前者は正常系、後者は明確なエラー。
 
 ### Severity mapping per check
 
 | Check | 事象 | Severity | 根拠 |
 |---|---|---|---|
-| `check_labels` | profile にあって repo に無い | **high** | CI/ラベル運用が破綻する可能性 |
-| `check_labels` | repo にあって profile に無い | **low** | ユーザーが意図的に追加した可能性あり、削除提案は慎重に |
+| `check_labels` | profile にあって repo に無い(missing) | **high** | CI/ラベル運用が破綻する可能性 |
+| `check_labels` | repo にあって profile に無い(extra) | **low** | ユーザーが意図的に追加した可能性あり、削除提案は慎重に。**severity: low で必ず finding を emit する**(完全に無視するわけではない) |
 | `check_labels` | color mismatch | **medium** | 視認性のみ、運用影響は小さい |
 | `check_labels` | description mismatch | **low** | informational |
 | `check_protection` | downgrade(Phase 7 の 13 rules で検出) | **critical** | セキュリティガード弱体化、最優先対処 |
@@ -481,9 +509,9 @@ except (
 | gh api rate limit | 同上 | `GhRateLimitError` → ClickException (exit 1) — scheduled mode retry は Phase 8.5+ |
 | 404 on labels endpoint | `labels_api.list_labels` | `GhNotFoundError` → empty list として扱い(ラベル未設定) |
 | 404 on protection endpoint | `protection_api.get_branch_protection` | `GhNotFoundError` → empty dict として扱い(drift として検出) |
-| `profile.protection_policy is None` | N/A | `check_protection` が `()` を返す(エラーではない) |
+| `profile.protection_policy is None`(明示的な opt-out) | N/A | `check_protection` が `()` を返す(エラーではない)。profile がそもそも protection を管理しないケース |
+| `profile.protection_policy is "solo-default"` だが `bp_config.policies` に `"solo-default"` が無い | CLI `ScanContext` builder | `ProtectionPolicyNotFoundError` → ClickException (exit 1)。misconfiguration として fail-fast |
 | `profile.files: []` | N/A | `check_profile_files` が `()` を返す |
-| `branch-protection.yml` に profile が参照する policy が無い | config load | `ProtectionPolicyNotFoundError` → ClickException (exit 1) |
 | profile.files[] の local file が読めない(permissions 等) | `check_profile_files` | `OSError` → 伝播 → ClickException (exit 1) |
 | `--output <path>` 書き込み失敗 | CLI output step | `OSError` → `DriftOutputError from e` → ClickException (exit 1) |
 | `--severity` / `--report-mode` に不正値 | click validation | UsageError (exit 2) |
