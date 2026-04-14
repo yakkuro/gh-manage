@@ -69,7 +69,7 @@ The test resolves `gh_manage.data.profiles["python-service.yml"]` and `gh_manage
 This test is a **regression-pinning characterization test**, not a TDD-driven new feature. The raw-copy invariant in `profile_sync._safe_write` already exists and already produces byte-identical copies for bundled templates. The test's purpose is to pin that correct current behavior against future mutations.
 
 1. **Add the test** → on first run, expect PASS (the invariant already holds).
-2. **Regression check** (mandatory before committing): temporarily modify `profile_sync._safe_write` to prepend `b"X"` → re-run the new test → confirm it FAILS with the expected byte-mismatch message → revert the mutation → re-run → confirm it PASSES again. This step proves the test actually detects the mutation it claims to detect; without it, a test that passes on first try is indistinguishable from a test that would pass even if the implementation were broken.
+2. **Regression check** (mandatory before committing): temporarily modify the byte-copying line inside `profile_sync._safe_write` (currently `dest.write_bytes(source.read_bytes())`) to prepend `b"X"` to the written bytes — e.g., `dest.write_bytes(b"X" + source.read_bytes())`. Do NOT change the function signature, imports, or surrounding structure. Re-run the new test → confirm it FAILS with the expected byte-mismatch message → revert the mutation → re-run → confirm it PASSES again. This step proves the test actually detects the mutation it claims to detect; without it, a test that passes on first try is indistinguishable from a test that would pass even if the implementation were broken.
 3. **Commit** only after the regression check has produced both a FAIL and a PASS result.
 
 Renaming "TDD" → "Characterization test" is intentional; do not describe this test as TDD-driven in commit messages or PR descriptions, as that would misrepresent the sequence.
@@ -297,11 +297,13 @@ After the bump PR merges and `main` is updated. The sequence has three phases (p
 # ---- Phase A: pre-check (local, reversible) ----
 git checkout main && git pull --ff-only
 
-# Verify 'origin' resolves to yakkuro/gh-manage before pushing anything.
-# In a multi-remote setup or on a fork, origin may point elsewhere and we
-# would accidentally publish tags on the wrong remote. Abort the whole
-# release flow if this check fails — there is no partial state to clean up.
-git remote -v | grep -q "yakkuro/gh-manage" || { echo "FATAL: origin is not yakkuro/gh-manage; inspect 'git remote -v' and push tags to the correct remote explicitly."; exit 1; }
+# Verify 'origin' resolves specifically to yakkuro/gh-manage before pushing
+# anything. In a multi-remote setup or on a fork, origin may point elsewhere.
+# Use 'git remote get-url origin' (NOT 'git remote -v | grep') so an unrelated
+# 'upstream' remote pointing at yakkuro/gh-manage cannot satisfy the check
+# while origin points at a fork. Abort the whole release flow if this fails —
+# there is no partial state to clean up.
+git remote get-url origin | grep -q "yakkuro/gh-manage" || { echo "FATAL: origin is not yakkuro/gh-manage (it is '$(git remote get-url origin)'). Push tags to the correct remote explicitly."; exit 1; }
 
 BUMP_SHA=$(git log -1 --format=%H)
 
@@ -333,11 +335,12 @@ gh release create cli/v1.0.0 \
 # Partial state in Phase C: if the first gh release create succeeds but
 # the second fails (rate limit, transient GitHub API error), you have tags
 # for both versions but only one published release. Recovery: re-run only
-# the failed gh release create (it is idempotent at the CLI level —
-# re-running on an existing release will fail with "release already
-# exists", which is the harmless case). If that does not work, use
-# 'gh release edit --draft=false' or create the release manually via the
-# web UI.
+# the failed gh release create. Note that 'gh release create' is NOT
+# idempotent — re-running against an existing release fails with
+# "release already exists" (a safe no-op that does not overwrite anything,
+# but still a failure). To edit notes on an already-created release,
+# use 'gh release edit', not 'gh release create'. If neither works,
+# create the release manually via the web UI.
 
 # ---- Phase D: verify both releases are published before declaring done ----
 gh release list --limit 5 | grep -q "^v1.0.0" || { echo "FATAL: v1.0.0 release missing after creation"; exit 1; }
