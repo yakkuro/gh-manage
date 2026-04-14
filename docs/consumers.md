@@ -81,6 +81,30 @@ After all three discoveries were addressed, the cross-repo flow worked end-to-en
 - **mypy strict-by-default surprises**: `import-untyped` errors for your own modules (without `py.typed` markers) and for stubless third-party deps will fire. The minimum-friction fix is `[tool.mypy] ignore_missing_imports = true` in `pyproject.toml`. Tighten incrementally by adding `py.typed` markers to your own packages.
 - **`gh-manage-ref` is required**: pin it to the same `@<ref>` you use in `uses:`. Mismatching them produces an obvious error at job start.
 
+## Phase C — drift-scanner bulk rollout (2026-04-13)
+
+With the drift scanner automated in Phase 8.5 (cli/v0.6.0), `src/gh_manage/data/repos.yml` was expanded from 1 repository to 9 as production-scale validation of the weekly cron workflow. None of the additions required consumer-side preparation — all were zero-touch adoptions by adding one entry to `repos.yml` and letting the weekly scanner cover them.
+
+These repos use gh-manage's **drift scanner only** at this point; they have not yet adopted the reusable PR gate workflows. All run under the `python-service` profile for label, branch-protection, and profile-file drift detection.
+
+| Repo | Adopted | Profile | Domain |
+|---|---|---|---|
+| `yakkuro/gh-manage` | 2026-04-12 | `python-service` | Self-hosted dogfood |
+| `yakkuro/slack-agents` | 2026-04-13 | `python-service` | Slack agent framework |
+| `yakkuro/llm-kb` | 2026-04-13 | `python-service` | LLM-powered knowledge base (full adoption narrative above) |
+| `yakkuro/rtvc-bench` | 2026-04-13 | `python-service` | RTVC benchmarking |
+| `yakkuro/scenario-engine` | 2026-04-13 | `python-service` | Scenario runner |
+| `yakkuro/tts` | 2026-04-13 | `python-service` | TTS service |
+| `yakkuro/vox-speak` | 2026-04-13 | `python-service` | Voice generation |
+| `yakkuro/nade-nade` | 2026-04-13 | `python-service` | Python service |
+| `yakkuro/picshop` | 2026-04-13 | `python-service` | Python service |
+
+### What Phase C validated
+
+- **`--all` flag with `repos.yml`** — 9 repos in one scan, partial-continue on per-repo failure, consolidated reporting.
+- **`--report-mode issue`** — weekly cron posts findings to GitHub Issues with 24-hour double-check auto-close for repos that drop back to zero findings.
+- **GitHub Pro upgrade (2026-04-13)** — branch protection on private repos requires Pro. Upgrading enabled `gh-manage protection sync` to work uniformly for both public and private Phase C members.
+
 ## Adding your repo
 
 Open a PR against `yakkuro/gh-manage` adding a section to this file describing your adoption. Include the same fields as the llm-kb entry above. PRs that document discoveries (consumer-side prep work, edge cases) are especially valuable — they help future consumers skip the same pitfalls.
