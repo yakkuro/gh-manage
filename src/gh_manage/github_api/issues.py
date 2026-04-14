@@ -44,9 +44,9 @@ def create_issue(repo: str, title: str, body: str, labels: list[str]) -> dict[st
         method="POST",
         body={"title": title, "body": body, "labels": labels},
     )
-    assert isinstance(result, dict), (
-        f"Expected dict from issue creation, got {type(result).__name__}"
-    )
+    assert isinstance(
+        result, dict
+    ), f"Expected dict from issue creation, got {type(result).__name__}"
     return result
 
 
@@ -113,7 +113,7 @@ def get_issue_comments(
     )
     if result is None:
         return []
-    assert isinstance(result, list), (
-        f"Expected list from comments endpoint, got {type(result).__name__}"
-    )
+    assert isinstance(
+        result, list
+    ), f"Expected list from comments endpoint, got {type(result).__name__}"
     return result
