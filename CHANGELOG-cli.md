@@ -8,6 +8,34 @@ The reusable workflow changelog lives in `CHANGELOG-reusable.md` and tracks inde
 
 _Nothing yet._
 
+## [1.0.1] - 2026-04-15
+
+Hardening cleanup. 3 bug fixes from past Codex reviews and 2 housekeeping items. PATCH-level release with no API surface change.
+
+### Fixed
+
+- **[#10](https://github.com/yakkuro/gh-manage/issues/10)** — `github_api/labels.list_labels` now validates NDJSON items via a transient pydantic `_LabelDTO` before constructing `Label`. Malformed items raise `GhAPIError` with actionable context instead of raw `KeyError` / `AttributeError`. Silent coercion of falsy non-None description values is removed (intentional behavior change; in practice GitHub never returns `0`/`False` for description).
+- **[#11](https://github.com/yakkuro/gh-manage/issues/11)** — `run_gh_api` now raises `GhAPIError` when POST or PATCH returns empty stdout. GET and DELETE empty-stdout behavior is preserved (returns `None`).
+- **[#13](https://github.com/yakkuro/gh-manage/issues/13)** — `git_cli.parse_origin_url` now accepts all 4 GitHub remote URL forms: `git@github.com:owner/repo` (SCP-form), `https://github.com/owner/repo`, `ssh://git@github.com/owner/repo` (new), and `ssh://git@ssh.github.com:443/owner/repo` (new — SSH-over-port-443 alternate hostname). Implementation switched from 2 regex constants to a `urllib.parse`-based hybrid parser. Non-github hosts and the `git://` read-only scheme are still rejected.
+
+### Changed
+
+- **`pyproject.toml`** — version bumped to `1.0.1`, `mypy>=1.12,<2` added to dev dependencies (root-cause fix: mypy was previously running from system install outside the venv, preventing it from seeing venv-installed `types-PyYAML` stubs; adding mypy to project dev deps makes `uv run mypy` use the venv binary).
+- **`src/gh_manage/__init__.py`** — `__version__` bumped to `"1.0.1"`.
+- **`tests/test_sanity.py`** — expected `__version__` bumped to `"1.0.1"`.
+
+### Internal
+
+- **ruff format** — `src/gh_manage/github_api/{issues,protection}.py` and `tests/unit/drift/test_drift_sync.py` now pass `ruff format --check` against the workflow-pinned ruff version `0.8.0`. (An initial ruff format commit used the venv's `0.15.7` which differs in multi-line assert style; a follow-up commit re-applied `ruff@0.8.0 format` to match CI.)
+- **mypy** — `uv run mypy src/` now reports 0 errors (was: 2 errors for `types-PyYAML` stubs that existed in the venv but weren't discovered by the system-installed mypy).
+- **Tests** — 11 new tests added across 3 test files (4 for #10, 2 for #11, 5 for #13). Total: 412 passing (was: 401).
+
+### Reference
+
+- PR: [#25](https://github.com/yakkuro/gh-manage/pull/25)
+- Spec: `docs/specs/2026-04-14-v1.0.x-cleanup-design.md`
+- Plan: `docs/plans/2026-04-14-v1.0.x-cleanup.md`
+
 ## [1.0.0] - 2026-04-14
 
 Stable API milestone. No new CLI features; this release graduates the `gh-manage` Python CLI to the v1.0 stability contract. See [`CHANGELOG-reusable.md`](CHANGELOG-reusable.md) v1.0.0 for the reusable-workflow stability promise announced at the same commit. The CLI's subcommand surface (`labels`, `init`, `apply`, `protection`, `drift`, `issues`) and bundled data schemas (`labels.yml`, `branch-protection.yml`, `profile.yml`, `repos.yml`) are frozen under semver — removing or renaming any subcommand, flag, or schema key is a v2.0 break. See [`docs/versioning.md`](docs/versioning.md) for the full stability promise.
@@ -176,7 +204,8 @@ First release on the CLI track. This is the Phase 4 milestone: establishes the C
 - **Tested on Linux and macOS only**. Windows support is not explicitly targeted in v0.1.0.
 - **No `gh extension upgrade` contract guarantees** beyond whatever the gh CLI's default behavior provides.
 
-[Unreleased]: https://github.com/yakkuro/gh-manage/compare/cli/v1.0.0...HEAD
+[Unreleased]: https://github.com/yakkuro/gh-manage/compare/cli/v1.0.1...HEAD
+[1.0.1]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v1.0.1
 [1.0.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v1.0.0
 [0.6.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.6.0
 [0.5.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.5.0
