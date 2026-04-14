@@ -6,6 +6,8 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 ## [Unreleased]
 
+_Nothing yet._
+
 ## [1.0.0] - 2026-04-14
 
 Stable API milestone. No functional changes since v0.2.1.
@@ -140,7 +142,8 @@ _N/A — first release._
 - **Cross-repo self-checkout has NOT been empirically validated** in v0.1.0 — the same-repo dogfood (gh-manage's own `ci.yml`) and smoke-test are the only tested invocation paths. Phase 3 (port-registry adoption) will be the first real cross-repo test. If issues arise, they will be fixed in v0.1.1 or v0.2.0.
 - **Pinned tool versions are not the latest available** as of 2026-04-10. `uv` is pinned at 0.5.0 (latest: 0.11.6), `ruff` at 0.8.0 (latest: 0.15.10), `mypy` at 1.12.0 (latest: 1.20.0). Tool version refresh is scheduled for v0.2.0.
 
-[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/yakkuro/gh-manage/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/yakkuro/gh-manage/releases/tag/v1.0.0
 [0.2.1]: https://github.com/yakkuro/gh-manage/releases/tag/v0.2.1
 [0.2.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.2.0
 [0.1.0]: https://github.com/yakkuro/gh-manage/releases/tag/v0.1.0

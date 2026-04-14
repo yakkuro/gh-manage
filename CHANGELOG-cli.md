@@ -8,6 +8,23 @@ The reusable workflow changelog lives in `CHANGELOG-reusable.md` and tracks inde
 
 _Nothing yet._
 
+## [1.0.0] - 2026-04-14
+
+Stable API milestone. No new CLI features; this release graduates the `gh-manage` Python CLI to the v1.0 stability contract. See [`CHANGELOG-reusable.md`](CHANGELOG-reusable.md) v1.0.0 for the reusable-workflow stability promise announced at the same commit. The CLI's subcommand surface (`labels`, `init`, `apply`, `protection`, `drift`, `issues`) and bundled data schemas (`labels.yml`, `branch-protection.yml`, `profile.yml`, `repos.yml`) are frozen under semver — removing or renaming any subcommand, flag, or schema key is a v2.0 break. See [`docs/versioning.md`](docs/versioning.md) for the full stability promise.
+
+### Changed
+
+- **`pyproject.toml`** — `version` bumped from `"0.6.0"` to `"1.0.0"`
+- **`src/gh_manage/__init__.py`** — `__version__` bumped from `"0.6.0"` to `"1.0.0"`
+- **`tests/test_sanity.py`** — expected `__version__` bumped to `"1.0.0"`
+- **`uv.lock`** — regenerated after pyproject.toml bump
+
+### Reference
+
+- Top-level design specification: [`docs/specs/2026-04-10-gh-manage-design.md`](docs/specs/2026-04-10-gh-manage-design.md)
+- Stability promise: [`docs/versioning.md`](docs/versioning.md)
+- Distribution channels: [`docs/distribution-channels.md`](docs/distribution-channels.md)
+
 ## [0.6.0] - 2026-04-12
 
 Phase 8.5 milestone: fully-automated weekly drift scanning with GitHub Issue reporting. Builds on Phase 8's stdout/json/markdown drift reports by adding `--report-mode issue` (creates one open Issue per repo with zero-findings auto-close after a 24-hour double-check), `--all` batch mode driven by bundled `repos.yml`, and a scheduled cron workflow (`drift-scanner.yml`). Shipped in [PR #21](https://github.com/yakkuro/gh-manage/pull/21). Plan: [`docs/plans/2026-04-12-phase-8.5-drift-automation.md`](docs/plans/2026-04-12-phase-8.5-drift-automation.md). Spec: [`docs/specs/2026-04-12-phase-8.5-drift-automation-design.md`](docs/specs/2026-04-12-phase-8.5-drift-automation-design.md).
@@ -159,6 +176,11 @@ First release on the CLI track. This is the Phase 4 milestone: establishes the C
 - **Tested on Linux and macOS only**. Windows support is not explicitly targeted in v0.1.0.
 - **No `gh extension upgrade` contract guarantees** beyond whatever the gh CLI's default behavior provides.
 
-[Unreleased]: https://github.com/yakkuro/gh-manage/compare/cli/v0.2.0...HEAD
+[Unreleased]: https://github.com/yakkuro/gh-manage/compare/cli/v1.0.0...HEAD
+[1.0.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v1.0.0
+[0.6.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.6.0
+[0.5.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.5.0
+[0.4.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.4.0
+[0.3.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.3.0
 [0.2.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.2.0
 [0.1.0]: https://github.com/yakkuro/gh-manage/releases/tag/cli/v0.1.0
