@@ -8,6 +8,90 @@ The reusable workflow changelog lives in `CHANGELOG-reusable.md` and tracks inde
 
 _Nothing yet._
 
+## [0.6.0] - 2026-04-12
+
+Phase 8.5 milestone: fully-automated weekly drift scanning with GitHub Issue reporting. Builds on Phase 8's stdout/json/markdown drift reports by adding `--report-mode issue` (creates one open Issue per repo with zero-findings auto-close after a 24-hour double-check), `--all` batch mode driven by bundled `repos.yml`, and a scheduled cron workflow (`drift-scanner.yml`). Shipped in [PR #21](https://github.com/yakkuro/gh-manage/pull/21). Plan: [`docs/plans/2026-04-12-phase-8.5-drift-automation.md`](docs/plans/2026-04-12-phase-8.5-drift-automation.md). Spec: [`docs/specs/2026-04-12-phase-8.5-drift-automation-design.md`](docs/specs/2026-04-12-phase-8.5-drift-automation-design.md).
+
+### Added
+
+- **`src/gh_manage/drift_sync.py` issue-report formatters** — `format_issue_body`, `format_issue_comment`, `parse_zero_findings_timestamps`, `should_close_issue`, `resolve_drift_issue`. 24-hour double-check state machine stored as hidden `<!-- scan:zero-findings:<ISO8601> -->` metadata in comments.
+- **`src/gh_manage/github_api/issues.py`** — 7 Issue CRUD functions mirroring `github_api/labels.py` pattern: `search_drift_issue`, `create_issue`, `update_issue_body`, `add_issue_comment`, `close_issue`, `ensure_drift_label` (swallows 422 "already exists"), `get_issue_comments`.
+- **`src/gh_manage/models/repos.py`** — `ReposConfig(version: Literal[1], repos: list[RepoEntry])` with `RepoEntry.name` validator enforcing `owner/repo` format.
+- **`src/gh_manage/data/repos.yml`** — bundled `repos.yml` v1 schema with a single initial entry (`yakkuro/gh-manage` / `python-service`). Subsequent repos are added as separate follow-up commits, not as part of this release.
+- **`.github/workflows/drift-scanner.yml`** — weekly cron (`0 0 * * 1`) + `workflow_dispatch` trigger. Runs `gh-manage drift --all --report-mode issue --severity low` using `GH_MANAGE_TOKEN` secret.
+- **`commands/drift.py` `--all` + partial-continue** — `_scan_all_repos` helper catches `(GhError, ConfigError, GitError, ProfileError, ProtectionError, DriftError)` per-repo to keep scanning after one repo fails.
+
+### Known limitations
+
+- **Issue body rewrite on every run** — the Issue body is overwritten each scan rather than diffed. Minor UX cost, acceptable for v0.6.0.
+- **24-hour auto-close is timezone-naive** — uses UTC only; consumers in non-UTC timezones see the close after UTC midnight has passed.
+
+## [0.5.0] - 2026-04-12
+
+Phase 8 milestone: drift scanner foundation. Adds `gh manage drift` subcommand with 3 check categories (labels, branch protection, profile files), 3 report formats (stdout, JSON, Markdown), and a check-registry pattern for easy extension. Shipped in [PR #18](https://github.com/yakkuro/gh-manage/pull/18). Plan: [`docs/plans/2026-04-11-phase-8-drift.md`](docs/plans/2026-04-11-phase-8-drift.md). Spec: [`docs/specs/2026-04-11-phase-8-drift-design.md`](docs/specs/2026-04-11-phase-8-drift-design.md).
+
+### Added
+
+- **`src/gh_manage/drift_sync.py`** — `Finding` dataclass (per-item granularity), `ScanContext`, `@register_check` decorator, `run_all_checks` orchestrator, 3 check implementations: `check_labels` (against bundled `labels.yml`), `check_protection` (13 downgrade rules shared with Phase 7), `check_profile_files` (SHA256 content hashing against bundled templates).
+- **`src/gh_manage/commands/drift.py`** — click subcommand with `--profile`, `--severity` (`critical`|`high`|`medium`|`low`), `--report-mode` (`stdout`|`json`|`markdown-file`), `--output` flag. `_handle_errors` decorator covers `(GhError, ConfigError, GitError, ProfileError, ProtectionError, DriftError)`.
+- **Severity filtering** — `_filter_by_severity` drops findings below the `--severity` threshold before reporting. `gh manage drift` always exits 0 on a successful scan; findings are reports, not errors. A non-zero exit is reserved for scan failures themselves (via `_handle_errors` → `ClickException`).
+- **Scenario-driven tests** — `tests/unit/drift_sync/scenarios/` uses YAML fixtures + pytest parametrize to run each check against known-good and known-bad states.
+
+### Known limitations
+
+- **Profile-files check depends on SHA256 exactness** — a whitespace-only change in a consumer's CI workflow triggers a drift finding. Intentional for v0.5.0; a future fuzzy-match mode may relax this.
+- **No `--all` flag yet** — single-repo only. Batch mode arrives in Phase 8.5.
+- **No Issue reporting** — `--report-mode` supports only file/stdout output in v0.5.0. Issue mode arrives in Phase 8.5.
+
+## [0.4.0] - 2026-04-11
+
+Phase 7 milestone: branch protection sync / diff. Adds `gh manage protection sync` and `gh manage protection diff`, wires `gh-manage init` to auto-apply the profile's protection policy, and replaces the Phase 6 stub of `gh-manage apply --also-protection` with the real implementation. Introduces a 13-rule downgrade detector that blocks `gh-manage` from silently weakening protection. Shipped in [PR #16](https://github.com/yakkuro/gh-manage/pull/16). Plan: [`docs/plans/2026-04-11-phase-7-protection.md`](docs/plans/2026-04-11-phase-7-protection.md). Spec: [`docs/specs/2026-04-11-phase-7-protection-design.md`](docs/specs/2026-04-11-phase-7-protection-design.md).
+
+### Added
+
+- **`src/gh_manage/protection_sync.py`** — `ProtectionFieldChange`, `DowngradeFinding`, `ProtectionDiff` dataclasses; error hierarchy (`ProtectionError`, `ProtectionDowngradeError`, `ProtectionBackupError`, `ProtectionApplyError`, `ProtectionPolicyNotFoundError`); 13 downgrade detection rules in `detect_downgrade`; transactional `apply_protection_diff` with microsecond-precision backup filenames to prevent TOCTOU clobbering.
+- **`src/gh_manage/commands/protection.py`** — click group with `sync` and `diff` subcommands. `sync` uses `--downgrade-allowed` plus `--yes` (or TTY interactive confirm) as the downgrade gate. `diff` exits 0 on no changes, 0 on non-downgrade changes, 0 on downgrade with `--downgrade-allowed`, and 1 on detected downgrade without `--downgrade-allowed`.
+- **`src/gh_manage/models/branch_protection.py`** — pydantic v2 model matching the GitHub API shape for branch protection settings, with `extra="forbid"` and field-level validation.
+- **`src/gh_manage/github_api/protection.py`** — `get_branch_protection`, `put_branch_protection`, `delete_branch_protection`. All go through `github_client.run_gh_api(body=dict)` (Phase 5 stdin path introduced in the checkpoint refactor).
+- **`src/gh_manage/data/branch-protection.yml`** — bundled `solo-default` policy: 1 PR approval, linear history, block force-pushes, no required status contexts.
+
+### Changed
+
+- **`src/gh_manage/commands/init.py`** — Phase 6 file placement + labels sync flow is extended to also apply the profile's branch protection policy when `protection_policy` is set on the profile.
+- **`src/gh_manage/commands/apply.py`** — `--also-protection` flag replaces the Phase 6 "not yet implemented" stub; now actually invokes `protection_sync.apply_protection_diff`.
+- **`src/gh_manage/models/profiles.py`** — `ProfileSpec` gains optional `protection_policy` (str | None) and `required_contexts` (list[str], default empty) fields. These were absent in Phase 6 and are introduced here for the init/apply wiring.
+
+### Known limitations
+
+- **GitHub Pro requirement on private repos** — branch protection API returns 403 on private repos without Pro. gh-manage surfaces the error clearly but cannot work around it.
+- **No support for required status contexts yet** — `required_contexts: []` is hardcoded in the policy; future phases may add dynamic contexts.
+- **No rollback of apply failures beyond backup files** — if `put_branch_protection` fails mid-way, the backup JSON is on disk for manual restoration.
+
+## [0.3.0] - 2026-04-11
+
+Phase 6 milestone: `gh manage init` and `gh manage apply`. Establishes the profile system (YAML specs that point at bundled templates), the file-placement engine (`profile_sync.py`), and the two user-facing subcommands that bootstrap a new repo and re-apply the profile to drifted files. Branch protection is NOT part of this release (the `apply --also-protection` flag ships as an explicit "not yet implemented" stub that errors out; wired to the real engine in Phase 7 v0.4.0). Shipped in [PR #12](https://github.com/yakkuro/gh-manage/pull/12). Plan: [`docs/plans/2026-04-11-phase-6-init-apply.md`](docs/plans/2026-04-11-phase-6-init-apply.md).
+
+### Added
+
+- **`src/gh_manage/profile_sync.py`** — `compute_files_diff` / `apply_files_diff` pure-function engine with 4 diff entry types (`FileCreate`, `FileOverwrite`, `FileSkipExists`, `FileNoop`), path-traversal defense (pydantic pre-filter + `Path.resolve()` + `is_relative_to()`), transactional apply with TOCTOU re-validation before each write.
+- **`src/gh_manage/commands/init.py`** — `gh-manage init --profile python-service <path>`. Applies profile file placements, then labels sync. Branch protection integration arrives in Phase 7 v0.4.0.
+- **`src/gh_manage/commands/apply.py`** — `gh-manage apply <path>`. Re-applies the profile to an existing repo to recover from drift. `--force` overrides content conflicts. `--also-protection` is an explicit "not yet implemented" stub that errors out — the real path ships in Phase 7 v0.4.0.
+- **`src/gh_manage/git_cli.py`** — minimal subprocess wrapper for `git` with error classification (`GitError` → `GitNotInstalled`, `GitNotRepo`, etc.). Kept separate from `github_client.py` because git calls are local and gh api calls are remote.
+- **`src/gh_manage/models/profiles.py`** — `ProfileSpec(version: Literal[1], name, description, files)` with file-entry validation (no absolute paths, no `..` segments). Optional `protection_policy` and `required_contexts` fields are added in Phase 7 v0.4.0, not here.
+- **`src/gh_manage/data/profiles/python-service.yml`** — first profile, points at `ci/python-ci.yml` and `claude-md/default.md`.
+- **`src/gh_manage/data/templates/ci/python-ci.yml`** — minimal CI workflow template, 20 lines, fully static.
+- **`src/gh_manage/data/templates/claude-md/default.md`** — CLAUDE.md template with `skip_if_exists: true`, 24 lines, fully static.
+
+### Changed
+
+- **`src/gh_manage/github_client.py`** — `run_gh_api` gained a `body: dict | None` parameter. When set, the body is JSON-serialized and written to `gh api` via stdin (`--input -`), avoiding shell-escape pitfalls for large bodies. This is load-bearing for Phase 7 branch protection PUT.
+
+### Known limitations
+
+- **Only one profile** — `python-service` is the only shipped profile. Adding new profiles is a config-only change once this foundation is in place.
+- **`--force` is all-or-nothing** — no per-file override. If any `overwrites` exist in the diff and `--force` is unset, the whole apply aborts.
+- **No template variable substitution** — templates are raw byte copies. This is an explicit design choice; see [`docs/specs/2026-04-14-phase-9-v1-hardening-design.md`](docs/specs/2026-04-14-phase-9-v1-hardening-design.md) section 1 Future Evolution for the migration path if placeholders are ever added.
+
 ## [0.2.0] - 2026-04-11
 
 First real domain command on the CLI track: `gh manage labels sync/diff/show`. Phase 5 milestone. Self-dogfooded by applying gh-manage's own Conventional-Commits-aligned labels via `gh manage labels sync gh-manage --apply` (3 renames + 5 creates).

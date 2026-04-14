@@ -6,7 +6,48 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 ## [Unreleased]
 
-_Nothing yet._
+## [1.0.0] - 2026-04-14
+
+Stable API milestone. No functional changes since v0.2.1.
+
+This release is a formal stability promise, not a new feature drop. The reusable workflows (`reusable-pr-gate-python.yml`, `reusable-pr-gate-typescript.yml`) and composite actions (`actions/**`) have been unchanged since v0.2.1 (2026-04-10) and have been validated across 9 consumer repositories over 4+ days of production use (see [`docs/consumers.md`](docs/consumers.md)). This v1.0.0 tag makes the input surface a load-bearing contract that future releases will not break without bumping to v2.0.
+
+### What is contract-stable starting v1.0.0
+
+- **Inputs on both reusable workflows** — every `inputs.*` field on `reusable-pr-gate-python.yml` and `reusable-pr-gate-typescript.yml` (name, type, default, required flag) is frozen. Adding new optional inputs is a MINOR bump. Removing or renaming any input is a MAJOR bump.
+- **Composite action names and their `inputs.*` fields** — the 7 composite actions `log-gh-manage-version`, `setup-python-uv`, `run-ruff`, `run-mypy`, `setup-node-pnpm`, `run-eslint`, `run-tsc`. Renaming a composite or changing its input surface is a MAJOR break.
+- **Required `gh-manage-ref` input semantics** — consumers must pass the same `@<ref>` they used on the `uses:` line. This is load-bearing for cross-repo self-checkout (see the v0.2.1 fix below).
+- **Pinned tool versions** — `uv 0.5.0`, `ruff 0.8.0`, `mypy 1.12.0`, `pnpm 10.33.0`, `typescript 6.0.2`. Upgrading a pinned tool in a way that breaks consumer CI is a MAJOR break and requires a v2.0 bump.
+
+### What is NOT stable (internal)
+
+- **`tests/fixtures/projects/**`** — smoke-test fixtures are internal and may be restructured without a version bump.
+- **`.github/workflows/smoke-test.yml`** — internal to gh-manage's own CI.
+- **Composite action step implementations** — only the declared `inputs.*` surface is stable. The steps inside `action.yml` files can be refactored freely.
+
+### v0.x lessons rolled into v1.0
+
+- **v0.2.0** — TypeScript track added alongside the Phase 1 Python gate. Latent `github.workflow_ref` parser bug fixed pre-emptively (longest-prefix strip truncated refs containing `@`).
+- **v0.2.1** — **CRITICAL** cross-repo self-checkout fix. The `github.workflow_ref` context variable does NOT reflect the called reusable's ref in cross-repo contexts; it returns the top-level caller's ref. Same-repo dogfood in Phase 1-2 masked this bug. The fix replaced implicit `github.workflow_ref` parsing with an explicit `gh-manage-ref` required input. This fix is load-bearing for every consumer and is now frozen in the v1.0 contract.
+- **Visibility flip to public (2026-04-10)** — cross-repo `actions/checkout@v4` of a private gh-manage would require PAT plumbing on every consumer's runner; flipping gh-manage's visibility to public eliminated the consumer-side setup burden. gh-manage remains public at v1.0 for this reason.
+
+### Known limitations (carried forward from v0.2.1)
+
+All v0.2.0 + v0.2.1 known limitations still apply at v1.0.0:
+
+- **pnpm only** (TypeScript track) — `npm` and `yarn` consumers are not supported.
+- **eslint pinning is recommendation-only** — gh-manage documents recommended eslint family versions but does not enforce them.
+- **Minimum Node 20** — driven by vitest 4.x engine constraint.
+- **No `cache: pnpm`** — `setup-node-pnpm` intentionally skips the cache for now; cold installs run on every job.
+- **Non-root `working-directory` is shallow-tested** — smoke test covers `tests/fixtures/projects/typescript-sample`, but no deep monorepo path fixture.
+- **No version skew detection** — older pnpm-generated lockfiles vs pnpm 10 runtime, Node-version / TypeScript-target mismatches.
+- **Pinned tool versions may lag upstream** — `uv 0.5.0`, `ruff 0.8.0`, `mypy 1.12.0`, etc. Upgrading these will happen in future MINOR releases.
+
+### Reference
+
+- Top-level design specification: [`docs/specs/2026-04-10-gh-manage-design.md`](docs/specs/2026-04-10-gh-manage-design.md)
+- Distribution channels: [`docs/distribution-channels.md`](docs/distribution-channels.md)
+- Versioning policy: [`docs/versioning.md`](docs/versioning.md)
 
 ## [0.2.1] - 2026-04-10
 
