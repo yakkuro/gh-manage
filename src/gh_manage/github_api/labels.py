@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from pydantic import BaseModel, ValidationError
+
 from gh_manage.github_client import GhAPIError, run_gh, run_gh_api
 
 
@@ -33,6 +35,29 @@ class Label:
     name: str
     color: str
     description: str
+
+
+class _LabelDTO(BaseModel):
+    """Transient pydantic model for parsing GitHub labels API NDJSON output.
+
+    Internal to list_labels — NOT exported (leading underscore). The
+    caller-facing dataclass is the frozen `Label` defined above. This DTO
+    exists only to validate the dict shape coming from `gh api` before
+    constructing `Label`.
+
+    Pattern: API response validation uses pydantic models as internal-only
+    helpers to catch schema violations early with clear error messages,
+    then constructs the public dataclass. This avoids raw KeyError /
+    AttributeError / silent type coercion in the error path. If a future
+    GitHub API change adds new fields, `extra="ignore"` quietly drops them
+    instead of breaking the parser.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    name: str
+    color: str
+    description: str | None = None
 
 
 def list_labels(repo: str) -> list[Label]:
@@ -62,11 +87,22 @@ def list_labels(repo: str) -> list[Label]:
                 f"Failed to parse label entry from `gh api` output: {e}. "
                 f"Re-run with `GH_DEBUG=api` to inspect the raw response."
             ) from e
+
+        try:
+            dto = _LabelDTO.model_validate(item)
+        except ValidationError as e:
+            raise GhAPIError(
+                f"GitHub API returned malformed label item: {e.errors()}. "
+                f"Endpoint: repos/{repo}/labels. "
+                f"Raw item: {item!r}. "
+                f"Re-run with `GH_DEBUG=api` to inspect the raw response."
+            ) from e
+
         labels.append(
             Label(
-                name=item["name"],
-                color=item["color"].lower(),
-                description=item.get("description") or "",
+                name=dto.name,
+                color=dto.color.lower(),
+                description=dto.description if dto.description is not None else "",
             )
         )
     return labels

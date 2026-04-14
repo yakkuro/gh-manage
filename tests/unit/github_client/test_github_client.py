@@ -119,7 +119,7 @@ def test_run_gh_api_with_body_sends_json_via_stdin(
 ) -> None:
     import json
 
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     run_gh_api(
         "repos/foo/bar/labels",
         method="POST",
@@ -147,3 +147,35 @@ def test_run_gh_api_without_body_sends_no_stdin(
     args = mock_run.call_args.args[0]
     assert "--input" not in args
     assert mock_run.call_args.kwargs.get("input") is None
+
+
+# Issue #11 — POST/PATCH empty stdout silent None
+def test_run_gh_api_post_empty_stdout_raises(mocker: MockerFixture) -> None:
+    """POST returning exit 0 with empty stdout must raise GhAPIError, not return None.
+
+    GitHub's labels API documents that POST returns the created resource on
+    success. An empty stdout indicates the gh subprocess succeeded but
+    returned nothing — silent failure that the caller would never notice.
+    """
+    _mock_gh_success(mocker, "")
+    with pytest.raises(GhAPIError, match="empty response for POST"):
+        run_gh_api(
+            "repos/yakkuro/gh-manage/labels",
+            method="POST",
+            body={"name": "x", "color": "ff0000"},
+        )
+
+
+def test_run_gh_api_patch_empty_stdout_raises(mocker: MockerFixture) -> None:
+    """PATCH returning exit 0 with empty stdout must raise GhAPIError, not return None.
+
+    Same rationale as POST — GitHub's API documents that PATCH returns the
+    updated resource on success.
+    """
+    _mock_gh_success(mocker, "")
+    with pytest.raises(GhAPIError, match="empty response for PATCH"):
+        run_gh_api(
+            "repos/yakkuro/gh-manage/labels/x",
+            method="PATCH",
+            body={"name": "y"},
+        )

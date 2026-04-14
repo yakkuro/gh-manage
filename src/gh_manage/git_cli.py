@@ -16,37 +16,95 @@ import re
 import subprocess
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import urlparse
 
-# Match: git@github.com:owner/repo[.git] OR https://github.com/owner/repo[.git]
-# Allow trailing slash, .git suffix, owner/repo segments matching GitHub's
-# loose rules (alnum + dot + dash + underscore). Validation of the parts
-# is delegated to GitHub itself; we only check the host.
-_SSH_RE = re.compile(r"^git@github\.com:([\w.\-]+)/([\w.\-]+?)(?:\.git)?/?$")
-_HTTPS_RE = re.compile(r"^https://github\.com/([\w.\-]+)/([\w.\-]+?)(?:\.git)?/?$")
+# Step 1 (SCP-form normalization): captures `git@host:path` (no scheme).
+# urllib.parse cannot parse no-scheme URLs, so we normalize SCP-form to
+# ssh:// before delegating to urlparse. The greedy `(.+)` second capture
+# is intentional — malformed inputs like `git@host:443:extra` flow through
+# to the path-split validation at Step 5 and are rejected there.
+_SCP_FORM = re.compile(r"^git@([\w.\-]+):(.+)$")
+
+# Step 6 (owner/repo character validation): preserves the old regex's
+# strict character set — alphanumeric, dot, dash, underscore. GitHub allows
+# these in repository names; anything else (spaces, colons, etc.) is rejected.
+_PART_RE = re.compile(r"^[\w.\-]+$")
+
+# Allowed schemes: https for HTTPS, ssh for explicit SSH, plus the SCP-form
+# (no scheme) which we normalize to ssh:// at Step 1. The `git://` read-only
+# protocol is intentionally NOT allowed — it is unused by gh-manage and
+# untested. Add only when a real consumer requests it.
+_ALLOWED_SCHEMES = ("https", "ssh")
+
+# Allowed hosts: github.com (default) and ssh.github.com (the alternate
+# SSH-over-port-443 hostname for users behind restrictive firewalls).
+_ALLOWED_HOSTS = ("github.com", "ssh.github.com")
 
 
 def parse_origin_url(url: str) -> str:
     """Parse a git remote URL into 'owner/repo' form. Pure.
 
-    Supports GitHub only (github.com):
-      git@github.com:owner/repo.git    → owner/repo
-      git@github.com:owner/repo        → owner/repo
-      https://github.com/owner/repo.git → owner/repo
-      https://github.com/owner/repo    → owner/repo
+    Supports GitHub only (github.com or ssh.github.com):
 
-    Raises ValueError on any other URL form (gitlab, bitbucket, self-hosted,
+      git@github.com:owner/repo[.git]                      → owner/repo
+      https://github.com/owner/repo[.git]                  → owner/repo
+      ssh://git@github.com/owner/repo[.git]                → owner/repo
+      ssh://git@ssh.github.com:443/owner/repo[.git]        → owner/repo
+
+    Raises ValueError on any other form (gitlab, bitbucket, self-hosted,
     malformed) with an actionable message naming the offending URL and
     explaining gh-manage's GitHub-only constraint.
+
+    Implementation is a hybrid: SCP-form (no scheme) is normalized to
+    ssh:// via a regex first, then everything is parsed by urllib.parse.
+    See spec docs/specs/2026-04-14-v1.0.x-cleanup-design.md for the
+    rationale and edge cases.
     """
-    match = _SSH_RE.match(url) or _HTTPS_RE.match(url)
-    if match is None:
+    # Step 1: SCP-form normalization (urllib.parse cannot handle no-scheme URLs)
+    if (scp_match := _SCP_FORM.match(url)) is not None:
+        host, path = scp_match.groups()
+        url_to_parse = f"ssh://git@{host}/{path}"
+    else:
+        url_to_parse = url
+
+    # Step 2: parse via urllib
+    parsed = urlparse(url_to_parse)
+
+    # Step 3: validate scheme
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"Unsupported git remote URL: {url!r}. "
+            f"Scheme {parsed.scheme!r} is not supported. "
+            f"gh-manage only supports github.com origins via https, ssh, or git@."
+        )
+
+    # Step 4: validate host
+    host = parsed.hostname or ""
+    if host not in _ALLOWED_HOSTS:
         raise ValueError(
             f"Unsupported git remote URL: {url!r}. "
             f"gh-manage only supports GitHub (github.com) origins. "
             f"Non-GitHub remotes (gitlab.com, bitbucket.org, self-hosted) "
-            f"are not supported in Phase 6."
+            f"are not supported."
         )
-    owner, repo = match.groups()
+
+    # Step 5: extract and clean path
+    path = parsed.path.lstrip("/").removesuffix("/").removesuffix(".git")
+    parts = path.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(
+            f"Unsupported git remote URL: {url!r}. "
+            f"Cannot extract owner/repo from path {parsed.path!r}."
+        )
+    owner, repo = parts
+
+    # Step 6: validate owner/repo characters
+    if not _PART_RE.match(owner) or not _PART_RE.match(repo):
+        raise ValueError(
+            f"Unsupported git remote URL: {url!r}. "
+            f"owner/repo characters must match [\\w.\\-]+."
+        )
+
     return f"{owner}/{repo}"
 
 

@@ -132,7 +132,7 @@ def test_list_labels_converts_null_description_to_empty_string(
 # JSON body via `gh api --input -` (stdin), not `-f key=value` fields.
 # The body is captured as `call_args.kwargs["input"]` — a JSON string.
 def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     create_label(
         "yakkuro/gh-manage",
         Label(name="chore", color="e1e7eb", description="housekeeping"),
@@ -156,7 +156,7 @@ def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
 def test_update_label_with_rename_includes_new_name(
     mocker: MockerFixture,
 ) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     update_label(
         "yakkuro/gh-manage",
         current_name="bug",
@@ -179,7 +179,7 @@ def test_update_label_with_rename_includes_new_name(
 def test_update_label_without_rename_omits_new_name(
     mocker: MockerFixture,
 ) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     update_label(
         "yakkuro/gh-manage",
         current_name="fix",
@@ -208,3 +208,43 @@ def test_delete_label_calls_correct_endpoint(mocker: MockerFixture) -> None:
     assert "DELETE" in args
     assert "--input" not in args
     assert mock_run.call_args.kwargs.get("input") is None
+
+
+# Issue #10 — pydantic-based NDJSON validation
+def test_list_labels_missing_name_raises(mocker: MockerFixture) -> None:
+    """Valid JSON with missing 'name' field should raise GhAPIError, not KeyError."""
+    _mock_gh_success(mocker, '{"color": "ff0000", "description": "x"}\n')
+    with pytest.raises(GhAPIError, match="malformed label item"):
+        list_labels("yakkuro/gh-manage")
+
+
+def test_list_labels_wrong_typed_color_raises(mocker: MockerFixture) -> None:
+    """Valid JSON with wrong-typed 'color' (int instead of str) should raise GhAPIError."""
+    _mock_gh_success(mocker, '{"name": "bug", "color": 12345, "description": "x"}\n')
+    with pytest.raises(GhAPIError, match="malformed label item"):
+        list_labels("yakkuro/gh-manage")
+
+
+def test_list_labels_null_description_normalizes_to_empty(
+    mocker: MockerFixture,
+) -> None:
+    """description=null (existing behavior) must still normalize to empty string."""
+    _mock_gh_success(
+        mocker, '{"name": "bug", "color": "ff0000", "description": null}\n'
+    )
+    result = list_labels("yakkuro/gh-manage")
+    assert len(result) == 1
+    assert result[0].name == "bug"
+    assert result[0].color == "ff0000"
+    assert result[0].description == ""
+
+
+def test_list_labels_falsy_non_none_description_raises(mocker: MockerFixture) -> None:
+    """description=0 (a non-None falsy value) must raise GhAPIError under hardening,
+    not silently coerce to empty string. Old behavior used `item.get("description") or ""`
+    which collapsed 0/false/empty/None all into ''. New behavior uses pydantic so wrong
+    types raise. In practice GitHub never returns 0 for description, but the hardening
+    catches API contract violations and broken test fixtures."""
+    _mock_gh_success(mocker, '{"name": "bug", "color": "ff0000", "description": 0}\n')
+    with pytest.raises(GhAPIError, match="malformed label item"):
+        list_labels("yakkuro/gh-manage")
