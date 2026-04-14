@@ -69,6 +69,18 @@ The test resolves `gh_manage.data.profiles["python-service.yml"]` and `gh_manage
 2. Red verification: temporarily modify `profile_sync._safe_write` to prepend `b"X"` → confirm FAIL → revert
 3. Green: final PASS
 
+**Future evolution (Phase 10+) — what to do if placeholder substitution is added to `profile_sync`**:
+
+If a future phase introduces template placeholder substitution (e.g., `{{ version }}`, `{{ repo_name }}`) to `profile_sync.compute_files_diff` or `apply_files_diff`, this byte-compare test MUST be **deprecated and replaced**, not mechanically updated. The correct migration path:
+
+1. The PR introducing placeholders modifies `profile_sync._safe_write` (or equivalent) to handle substitution.
+2. The byte-compare assertion in this test fails because rendered output no longer equals source bytes.
+3. The PR author MUST NOT fix the test by adding placeholder rendering to the test's expected-bytes computation. That would hide the semantics-change.
+4. Instead: delete this test and replace with a schema-level validation test (e.g., "rendered YAML parses cleanly via PyYAML, rendered Markdown has the expected H1 heading") plus a small table of known placeholder values for snapshot comparison.
+5. The Phase 6 fixture golden tests must be migrated in the same PR.
+
+This test's purpose is to fail loudly the moment the raw-copy invariant breaks — that is the failure mode by design. "Failure that forces explicit design review" is the load-bearing value.
+
 ### 2. Documentation — 5 files (lightweight tour style)
 
 All 5 files target the "lightweight tour" depth: each file is 80-200 lines, assumes the reader is an external yakkuro org member (or the maintainer 6 months from now), and uses deep links to the design spec / CHANGELOGs / release checklist for readers who need more depth.
@@ -79,8 +91,8 @@ Target reader: someone who just landed on `https://github.com/yakkuro/gh-manage`
 
 Sections:
 1. **What is gh-manage** — 3-4 sentences. Single-org GitHub CI/CD + operational policy distribution system.
-2. **Features** — bullet list: reusable PR gates (Python + TypeScript), CLI extension (labels/init/apply/protection/drift), drift scanner with GitHub Issue reporting, composable profiles.
-3. **Quick example** — one consumer `.github/workflows/ci.yml` (minimal), one `uv tool install` command, one `gh-manage` invocation.
+2. **Three tracks** — explicit framing that gh-manage ships 3 independent deliverables consumed in different ways: (a) reusable GitHub Actions workflows (consumed via `uses: yakkuro/gh-manage/.github/workflows/...@vX.Y.Z`), (b) Python CLI tool (consumed via `uv tool install git+...@cli/vX.Y.Z`), (c) bundled configuration/profile/template data (consumed via the CLI, not standalone). One-line description per track. This replaces a generic "Features" bullet list and makes the consumption model clear before readers see the Quick example.
+3. **Quick example** — one consumer `.github/workflows/ci.yml` (minimal), one `uv tool install` command, one `gh-manage` invocation. Reader has already seen "Three tracks" in section 2, so the two installation commands do not look redundant.
 4. **Getting started** — single link to `docs/quick-start.md`.
 5. **Documentation** — table of links to architecture, versioning, distribution-channels, release-checklist, consumers, design spec.
 6. **Status** — v1.0.0 = stable. Next breaking change is v2.0.
@@ -195,7 +207,8 @@ The existing llm-kb narrative (77 lines) is preserved unchanged. After it, add a
 - Introductory paragraph explaining that the `repos.yml` expanded from 1 to 9 repos as production-scale validation of the weekly cron workflow, and that all 8 additions were zero-touch adoptions (drift scanner only, PR gates not yet adopted).
 - Markdown table with 4 columns (Repo, Adopted, Profile, Domain) and 9 rows (including gh-manage self-hosted dogfood, and llm-kb with a "already documented above" note).
 - "What Phase C validated" subsection — 3 bullets covering the `--all` flag, `--report-mode issue`, and the GitHub Pro upgrade.
-- "Discoveries" subsection — a single paragraph noting "none to report at v1.0.0, the scanner has run N cron invocations over M+ days with zero HIGH/CRITICAL findings" (N and M to be filled in from actual workflow run data at implementation time).
+- "Discoveries" subsection — a single paragraph noting "none to report at v1.0.0, the scanner has run N cron invocations over M+ days with zero HIGH/CRITICAL findings across all 9 repos" (N and M filled in at plan time from `gh run list --workflow=drift-scanner.yml --json createdAt,status --limit 50`).
+- **Minimum threshold for claiming "production validation"**: at least 1 scheduled weekly cron invocation (from the `0 0 * * 1` schedule in `drift-scanner.yml`) AND at least 2 calendar days of continuous exposure across all 9 repos. If these minima are NOT yet met at feature-PR authoring time, the discoveries paragraph must be deferred to the bump PR (where the extra days between feature-PR merge and bump-PR merge usually provide enough cron runs). The trivial "N=1 manual workflow_dispatch over 1 day" does NOT qualify as production validation.
 - Existing "Adding your repo" section preserved unchanged.
 
 Total addition: **~45 lines** in `docs/consumers.md`.
@@ -211,8 +224,8 @@ The spec contains several intentional placeholders that must be resolved during 
 | Placeholder | Where | How to resolve |
 |---|---|---|
 | `PR #<N>` in `CHANGELOG-cli.md` entries (×4) | Section 3 template | `gh pr list --state merged --search "Phase 6|Phase 7|Phase 8|Phase 8.5" --json number,title,mergedAt --limit 50` and match by phase name |
-| `<date-of-merged-PR>` in `CHANGELOG-cli.md` entries (×4) | Section 3 template | Same `gh pr list` command, use `mergedAt` field, format as `YYYY-MM-DD` |
-| `N cron invocations over M+ days` in `docs/consumers.md` Phase C discoveries paragraph | Section 5 | `gh run list --workflow=drift-scanner.yml --json createdAt,status --limit 50` to count runs; compute M from `createdAt` of the earliest run vs today |
+| `<date-of-merged-PR>` in `CHANGELOG-cli.md` entries (×4) | Section 3 template | Same `gh pr list` command, use the `mergedAt` field (NOT the phase authoring date from `docs/plans/2026-04-XX-phase-N-*.md`). Keep-a-Changelog convention is "date the release was cut", which maps to PR merge date, not plan authoring date. Format as `YYYY-MM-DD`. |
+| `N cron invocations over M+ days` in `docs/consumers.md` Phase C discoveries paragraph | Section 5 | `gh run list --workflow=drift-scanner.yml --json createdAt,status --limit 50` to count runs; compute M from `createdAt` of the earliest run vs today. See Section 5's minimum-threshold rule: defer the paragraph to the bump PR if < 1 scheduled cron invocation or < 2 calendar days have passed. |
 | Spec / plan path links in `CHANGELOG-cli.md` entries (×4) | Section 3 template | Use the existing file paths under `docs/specs/` and `docs/plans/` as listed in the "Four entries to add" table |
 | `(domain TBD)` for `nade-nade` and `picshop` in the consumers table | Section 5 | Check each repo's `README.md` or `pyproject.toml description` via `gh repo view yakkuro/<name> --json description` |
 
@@ -276,6 +289,12 @@ After the bump PR merges and `main` is updated:
 
 ```bash
 git checkout main && git pull --ff-only
+
+# Pre-check: verify 'origin' resolves to yakkuro/gh-manage before
+# pushing tags. In a multi-remote setup or on a fork, origin may point
+# elsewhere and we would accidentally publish tags on the wrong remote.
+git remote -v | grep -q "yakkuro/gh-manage" || { echo "FATAL: origin is not yakkuro/gh-manage; inspect 'git remote -v' and push tags to the correct remote explicitly."; exit 1; }
+
 BUMP_SHA=$(git log -1 --format=%H)
 
 git tag v1.0.0     $BUMP_SHA
