@@ -144,7 +144,14 @@ def run_gh_api(
 
     stdout = run_gh(args, stdin_input=stdin_input)
     if not stdout.strip():
-        return None
+        if method in ("GET", "DELETE"):
+            return None
+        raise GhAPIError(
+            f"GitHub API returned empty response for {method} {endpoint}. "
+            f"This is unexpected for {method} requests, which should return the "
+            f"created/updated resource. Re-run with `GH_DEBUG=api` to inspect "
+            f"the raw response."
+        )
     try:
         return json.loads(stdout)
     except json.JSONDecodeError as e:

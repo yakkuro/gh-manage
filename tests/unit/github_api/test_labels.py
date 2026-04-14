@@ -132,7 +132,7 @@ def test_list_labels_converts_null_description_to_empty_string(
 # JSON body via `gh api --input -` (stdin), not `-f key=value` fields.
 # The body is captured as `call_args.kwargs["input"]` — a JSON string.
 def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     create_label(
         "yakkuro/gh-manage",
         Label(name="chore", color="e1e7eb", description="housekeeping"),
@@ -156,7 +156,7 @@ def test_create_label_sends_correct_body(mocker: MockerFixture) -> None:
 def test_update_label_with_rename_includes_new_name(
     mocker: MockerFixture,
 ) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     update_label(
         "yakkuro/gh-manage",
         current_name="bug",
@@ -179,7 +179,7 @@ def test_update_label_with_rename_includes_new_name(
 def test_update_label_without_rename_omits_new_name(
     mocker: MockerFixture,
 ) -> None:
-    mock_run = _mock_gh_success(mocker, "")
+    mock_run = _mock_gh_success(mocker, '{"id": 1}')
     update_label(
         "yakkuro/gh-manage",
         current_name="fix",
