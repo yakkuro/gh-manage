@@ -27,11 +27,17 @@ from gh_manage.git_cli import (
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
+        # Existing forms (preserved)
         ("git@github.com:yakkuro/gh-manage.git", "yakkuro/gh-manage"),
         ("git@github.com:yakkuro/gh-manage", "yakkuro/gh-manage"),
         ("https://github.com/yakkuro/gh-manage.git", "yakkuro/gh-manage"),
         ("https://github.com/yakkuro/gh-manage", "yakkuro/gh-manage"),
         ("https://github.com/some-org/multi.dot.repo", "some-org/multi.dot.repo"),
+        # Issue #13 new forms (ssh:// scheme + ssh.github.com:443 alternate hostname)
+        ("ssh://git@github.com/yakkuro/gh-manage.git", "yakkuro/gh-manage"),
+        ("ssh://git@github.com/yakkuro/gh-manage", "yakkuro/gh-manage"),
+        ("ssh://git@ssh.github.com:443/yakkuro/gh-manage.git", "yakkuro/gh-manage"),
+        ("ssh://git@ssh.github.com:443/yakkuro/gh-manage", "yakkuro/gh-manage"),
     ],
 )
 def test_parse_origin_url_happy_paths(url: str, expected: str) -> None:
@@ -62,6 +68,16 @@ def test_parse_origin_url_rejects_malformed() -> None:
 def test_parse_origin_url_error_message_includes_offending_url() -> None:
     with pytest.raises(ValueError, match="gitlab.com"):
         parse_origin_url("git@gitlab.com:foo/bar.git")
+
+
+def test_parse_origin_url_rejects_malformed_scp_with_extra_colon() -> None:
+    """git@host:443:malformed — SCP-form regex greedily captures '443:malformed'
+    as the path. After SCP normalization to ssh://git@host/443:malformed, the
+    path-split logic at Step 5 sees 1 segment instead of 2 and rejects with
+    ValueError. Pins the defense against malformed SCP inputs that a user
+    might type while attempting SSH-over-port-443."""
+    with pytest.raises(ValueError):
+        parse_origin_url("git@github.com:443:malformed")
 
 
 def _mock_git_success(mocker: MockerFixture, stdout: str) -> object:
