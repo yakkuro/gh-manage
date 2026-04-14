@@ -64,6 +64,10 @@ Always run the install-based smoke test to verify package data resolves correctl
   ```
   Expected: the command loads the profile from package data and reaches the labels API call before failing with a `GhNotFoundError` (because the smoke repo doesn't exist on GitHub). Getting that far proves profile + templates + `git_cli` + `labels_api` all work end-to-end in the installed wheel.
 
+## L7 manual integration test — deferred at v1.0.0
+
+For the v1.0.0 release, the L7 manual integration test (10 steps against a dedicated `yakkuro/gh-manage-test-fixture` repo, as defined in `docs/specs/2026-04-10-gh-manage-design.md` section "L7 Pre-release acceptance test シナリオ") was **deferred**. The 9-repo Phase C production dogfood run (drift scanner running for 4+ days against all 9 repos in `src/gh_manage/data/repos.yml` with zero HIGH or CRITICAL findings) is treated as equivalent end-to-end validation evidence for v1.0.0. If a future release requires re-adding L7 infrastructure (because production dogfood evidence is insufficient for a specific new feature or regression scenario), open a GitHub issue first to create `yakkuro/gh-manage-test-fixture` and `scripts/reset-fixture.sh`.
+
 ## If a release goes out with the version mismatch
 
 If `gh-manage --version` reports the wrong version after a release, the fix path is:
