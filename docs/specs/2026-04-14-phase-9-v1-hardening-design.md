@@ -64,22 +64,21 @@ The test resolves `gh_manage.data.profiles["python-service.yml"]` and `gh_manage
 
 **Why this test matters**: it is NOT a tautology of `profile_sync.py`'s raw-byte-copy design. Its unique value is verifying that `importlib.resources` correctly resolves package data from a wheel-installed gh-manage (the existing Phase 6 fixture tests use filesystem paths under `tests/fixtures/profile_sync/`, which does not exercise wheel-install package-data resolution). This complements the `docs/release-checklist.md` post-release smoke test for `labels.yml` resolution with equivalent coverage for the `templates/` directory.
 
-**TDD flow**:
-1. Red: add the test → expect PASS on first run (the invariant already holds for bundled templates)
-2. Red verification: temporarily modify `profile_sync._safe_write` to prepend `b"X"` → confirm FAIL → revert
-3. Green: final PASS
+**Characterization test flow** (NOT classic TDD — there is no failing implementation to drive):
 
-**Future evolution (Phase 10+) — what to do if placeholder substitution is added to `profile_sync`**:
+This test is a **regression-pinning characterization test**, not a TDD-driven new feature. The raw-copy invariant in `profile_sync._safe_write` already exists and already produces byte-identical copies for bundled templates. The test's purpose is to pin that correct current behavior against future mutations.
 
-If a future phase introduces template placeholder substitution (e.g., `{{ version }}`, `{{ repo_name }}`) to `profile_sync.compute_files_diff` or `apply_files_diff`, this byte-compare test MUST be **deprecated and replaced**, not mechanically updated. The correct migration path:
+1. **Add the test** → on first run, expect PASS (the invariant already holds).
+2. **Regression check** (mandatory before committing): temporarily modify `profile_sync._safe_write` to prepend `b"X"` → re-run the new test → confirm it FAILS with the expected byte-mismatch message → revert the mutation → re-run → confirm it PASSES again. This step proves the test actually detects the mutation it claims to detect; without it, a test that passes on first try is indistinguishable from a test that would pass even if the implementation were broken.
+3. **Commit** only after the regression check has produced both a FAIL and a PASS result.
 
-1. The PR introducing placeholders modifies `profile_sync._safe_write` (or equivalent) to handle substitution.
-2. The byte-compare assertion in this test fails because rendered output no longer equals source bytes.
-3. The PR author MUST NOT fix the test by adding placeholder rendering to the test's expected-bytes computation. That would hide the semantics-change.
-4. Instead: delete this test and replace with a schema-level validation test (e.g., "rendered YAML parses cleanly via PyYAML, rendered Markdown has the expected H1 heading") plus a small table of known placeholder values for snapshot comparison.
-5. The Phase 6 fixture golden tests must be migrated in the same PR.
+Renaming "TDD" → "Characterization test" is intentional; do not describe this test as TDD-driven in commit messages or PR descriptions, as that would misrepresent the sequence.
 
-This test's purpose is to fail loudly the moment the raw-copy invariant breaks — that is the failure mode by design. "Failure that forces explicit design review" is the load-bearing value.
+**Future evolution (Phase 10+)** — if placeholder substitution is added to `profile_sync`:
+
+- The byte-compare assertion will fail because rendered output ≠ source bytes. This is the intended failure mode.
+- The migration PR MUST delete this test and replace it with a schema-level validation test (rendered YAML parses cleanly, rendered Markdown has expected H1, etc.); it MUST NOT "fix" the test by copying the rendering logic into the expected-bytes computation. That would hide the semantics change.
+- Phase 6 fixture golden tests must be migrated in the same PR.
 
 ### 2. Documentation — 5 files (lightweight tour style)
 
@@ -208,7 +207,7 @@ The existing llm-kb narrative (77 lines) is preserved unchanged. After it, add a
 - Markdown table with 4 columns (Repo, Adopted, Profile, Domain) and 9 rows (including gh-manage self-hosted dogfood, and llm-kb with a "already documented above" note).
 - "What Phase C validated" subsection — 3 bullets covering the `--all` flag, `--report-mode issue`, and the GitHub Pro upgrade.
 - "Discoveries" subsection — a single paragraph noting "none to report at v1.0.0, the scanner has run N cron invocations over M+ days with zero HIGH/CRITICAL findings across all 9 repos" (N and M filled in at plan time from `gh run list --workflow=drift-scanner.yml --json createdAt,status --limit 50`).
-- **Minimum threshold for claiming "production validation"**: at least 1 scheduled weekly cron invocation (from the `0 0 * * 1` schedule in `drift-scanner.yml`) AND at least 2 calendar days of continuous exposure across all 9 repos. If these minima are NOT yet met at feature-PR authoring time, the discoveries paragraph must be deferred to the bump PR (where the extra days between feature-PR merge and bump-PR merge usually provide enough cron runs). The trivial "N=1 manual workflow_dispatch over 1 day" does NOT qualify as production validation.
+- **Minimum threshold for claiming "production validation"**: at least 1 scheduled weekly cron invocation (from the `0 0 * * 1` schedule in `drift-scanner.yml`) AND at least 48 hours of continuous clock-time exposure (NOT "2 calendar dates", which could be as short as a few minutes straddling midnight) across all 9 repos. Measured as: `(now - earliest_cron_run_createdAt) ≥ 48h`. If these minima are NOT yet met at feature-PR authoring time, the discoveries paragraph must be deferred to the bump PR (where the extra days between feature-PR merge and bump-PR merge usually provide enough cron runs). The trivial "N=1 manual workflow_dispatch over 1 day" does NOT qualify as production validation.
 - Existing "Adding your repo" section preserved unchanged.
 
 Total addition: **~45 lines** in `docs/consumers.md`.
@@ -281,26 +280,48 @@ Created immediately after the feature PR merges and CI is green on `main`. Files
 
 Total content delta: **~+12 lines** (version bumps are trivial, most change is the CHANGELOG section rename which is just moving a heading).
 
-**Review protocol**: per `release-checklist.md`, bump PRs are single-file-value-change equivalent and qualify for cross-agent review skip per `workflow-review.md`'s skip conditions. Merge directly after CI green.
+**Review protocol**: the bump PR touches 6 files (3 version values + 2 CHANGELOG section-header renames + 1 auto-regenerated `uv.lock`), which exceeds `workflow-review.md`'s literal "1 file + ≤10 lines" skip condition. The skip is nonetheless justified because:
+
+1. **Zero logic changes**: every touched file is either a version-value swap, a `[Unreleased]` → `[1.0.0]` heading rename with no body edits, or a lock-file regeneration. None contain new code or modified behavior.
+2. **Mechanical by construction**: the 3 version-value edits are `sed`-equivalent, and the 2 CHANGELOG renames are `git mv`-equivalent. There is no judgment call to review.
+3. **Gated by `test_sanity.py`**: the CLI `test_package_version_is_defined` assertion is updated to `"1.0.0"`, so a wrong version value causes test failure, catching the most common bump mistake automatically without human review.
+4. **Historical precedent**: Phases 6, 7, 8, 8.5 all merged bump PRs without cross-agent review and none produced incorrect versions (the one Phase 6 mismatch was caught by the post-release install smoke test, not by pre-merge review — adding a reviewer would not have caught it).
+
+If any of the above conditions change — e.g., the bump PR also edits README for a stability announcement, or `uv.lock` has non-version-bump drift — the skip is no longer justified and the full 4-reviewer protocol applies. Merge after CI green only if all 4 conditions hold.
 
 ### 6.3 Release flow (bump PR merge → tags + GitHub releases)
 
-After the bump PR merges and `main` is updated:
+After the bump PR merges and `main` is updated. The sequence has three phases (pre-check → local tag + push → GH release creation), each with a failure-recovery note:
 
 ```bash
+# ---- Phase A: pre-check (local, reversible) ----
 git checkout main && git pull --ff-only
 
-# Pre-check: verify 'origin' resolves to yakkuro/gh-manage before
-# pushing tags. In a multi-remote setup or on a fork, origin may point
-# elsewhere and we would accidentally publish tags on the wrong remote.
+# Verify 'origin' resolves to yakkuro/gh-manage before pushing anything.
+# In a multi-remote setup or on a fork, origin may point elsewhere and we
+# would accidentally publish tags on the wrong remote. Abort the whole
+# release flow if this check fails — there is no partial state to clean up.
 git remote -v | grep -q "yakkuro/gh-manage" || { echo "FATAL: origin is not yakkuro/gh-manage; inspect 'git remote -v' and push tags to the correct remote explicitly."; exit 1; }
 
 BUMP_SHA=$(git log -1 --format=%H)
 
+# ---- Phase B: tag + push (irreversible once pushed) ----
+# Both tags go in a single push command: either both succeed or both fail.
+# There is no "one tag pushed, one not" partial state.
 git tag v1.0.0     $BUMP_SHA
 git tag cli/v1.0.0 $BUMP_SHA
 git push origin v1.0.0 cli/v1.0.0
 
+# If the push fails (network / auth): delete local tags with
+#   git tag -d v1.0.0 cli/v1.0.0
+# and restart Phase B. If the push succeeded but you want to abort the
+# release entirely, delete remote and local tags:
+#   git push --delete origin v1.0.0 cli/v1.0.0 && git tag -d v1.0.0 cli/v1.0.0
+# (destructive per git-workflow.md; only acceptable if no consumer has
+# installed from the bad tag — see release-checklist.md "If a release goes
+# out with the version mismatch" for the full recovery procedure.)
+
+# ---- Phase C: GH release creation (failure leaves tags without releases) ----
 gh release create v1.0.0 \
   --title "v1.0.0 — Reusable Workflows stability milestone" \
   --notes-file /tmp/release-notes-reusable.md
@@ -308,6 +329,20 @@ gh release create v1.0.0 \
 gh release create cli/v1.0.0 \
   --title "cli/v1.0.0 — Python CLI stability milestone" \
   --notes-file /tmp/release-notes-cli.md
+
+# Partial state in Phase C: if the first gh release create succeeds but
+# the second fails (rate limit, transient GitHub API error), you have tags
+# for both versions but only one published release. Recovery: re-run only
+# the failed gh release create (it is idempotent at the CLI level —
+# re-running on an existing release will fail with "release already
+# exists", which is the harmless case). If that does not work, use
+# 'gh release edit --draft=false' or create the release manually via the
+# web UI.
+
+# ---- Phase D: verify both releases are published before declaring done ----
+gh release list --limit 5 | grep -q "^v1.0.0" || { echo "FATAL: v1.0.0 release missing after creation"; exit 1; }
+gh release list --limit 5 | grep -q "^cli/v1.0.0" || { echo "FATAL: cli/v1.0.0 release missing after creation"; exit 1; }
+echo "Both releases published."
 ```
 
 Release notes are derived from the corresponding CHANGELOG entries. The reusable release notes mirror the new `CHANGELOG-reusable.md` `v1.0.0` entry in full. The CLI release notes summarize the 4 new `CHANGELOG-cli.md` entries (0.3.0 through 0.6.0) plus a 1.0 stability preamble.
@@ -336,10 +371,12 @@ This PR is complete when all of the following are true, verified with the listed
    - Command: `uv run pytest --cov=src/gh_manage --cov-report=term`
    - Expected: `src/gh_manage/` total ≥ 85%, `src/gh_manage/commands/drift.py` line ≥ 90%
 
-3. **All 5 documentation files exist and are internally linked**
+3. **All 5 documentation files exist and are within the target LOC range**
    - Command: `ls -la README.md docs/architecture.md docs/quick-start.md docs/versioning.md docs/distribution-channels.md`
-   - Expected: all 5 files present, non-empty, and within 80-250 LOC each
-   - Verification: manual read-through — each of the 5 files contains at least 2 relative-path markdown links (`](../...md)`, `](./...md)`, or similar) pointing at other files within `yakkuro/gh-manage` (not external URLs). A grep is insufficient because it cannot distinguish relative-path doc links from external URLs like `https://example.com/foo.md`.
+   - Expected: all 5 files present and non-empty
+   - Command: `wc -l README.md docs/architecture.md docs/quick-start.md docs/versioning.md docs/distribution-channels.md`
+   - Expected: each file within `80 ≤ LOC ≤ 250`. LOC rationale: lightweight-tour depth target from brainstorming Q2 Option A. A file under 80 is probably missing required sections; a file over 250 violates the brainstorming depth decision and should be trimmed or split.
+   - Verification (manual): each of the 5 files contains at least 2 relative-path markdown links (`](../...md)`, `](./...md)`, or similar) pointing at other files within `yakkuro/gh-manage` (not external URLs). A grep is insufficient because it cannot distinguish relative-path doc links from external URLs like `https://example.com/foo.md`.
 
 4. **`CHANGELOG-cli.md` has 4 new entries**
    - Command: `grep -c '^## \[0\.[3-6]\.0\]' CHANGELOG-cli.md`
