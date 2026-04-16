@@ -247,10 +247,10 @@ def test_sync_profile_without_protection_policy_stops(
     from gh_manage.models.profiles import ProfileSpec
     from gh_manage.models.branch_protection import BranchProtectionConfig
 
-    # Mock _resolve_profile_path to return a dummy path
+    # Mock resolve_profile_path to return a dummy path
     profile_path = tmp_path / "dummy.yml"
     mocker.patch(
-        "gh_manage.commands.protection._resolve_profile_path",
+        "gh_manage.commands.protection.resolve_profile_path",
         return_value=profile_path,
     )
 
