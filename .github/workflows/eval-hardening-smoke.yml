@@ -1,0 +1,202 @@
+name: Eval Hardening Smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/reusable-pr-gate-typescript.yml'
+      - '.github/workflows/eval-hardening-smoke.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/reusable-pr-gate-python.yml'
+      - '.github/workflows/reusable-pr-gate-typescript.yml'
+      - '.github/workflows/eval-hardening-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ========== Python ==========
+
+  # F1 — Python positive: flags and paths exercise word-splitting of the
+  # most common non-default install/test-command shape across the 22
+  # bundled consumers.
+  python-f1-flags-paths:
+    name: eval-hardening / python-F1 (flags+paths, expect pass)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-sample
+      install-command: "uv sync --all-extras"
+      test-command: "uv run pytest tests/ -v --tb=short"
+      gh-manage-ref: ${{ github.sha }}
+
+  # F2 — Python injection attempt. Spec sketches this with a sibling
+  # jobs.<id>.uses: + continue-on-error job; smoke-test.yml documents
+  # that job-level continue-on-error is not honoured for reusable
+  # workflow calls, so we replicate the critical ${TEST_CMD} step in a
+  # regular job with step-level continue-on-error, then assert.
+  python-f2-injection:
+    name: eval-hardening / python-F2 (injection neutralised)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/python-sample
+        run: |
+          set -euo pipefail
+          uv sync
+
+      # Replicates the body of the reusable workflow's test step. The
+      # key property under test: ${TEST_CMD} expands via word splitting
+      # only; the ';' token becomes a literal positional argv to pytest.
+      # This is exactly the same shell line as line 133 of
+      # reusable-pr-gate-python.yml, so the fixture stays in sync with
+      # the production change by construction.
+      - name: Replicate reusable test step (expect failure, marker MUST NOT leak)
+        id: inject
+        continue-on-error: true
+        shell: bash
+        working-directory: tests/fixtures/projects/python-sample
+        env:
+          TEST_CMD: "uv run pytest tests/ ; echo PWNED_BY_INJECTION"
+        run: |
+          set -euo pipefail
+          echo "::group::test"
+          echo "Running test-command: ${TEST_CMD}"
+          ${TEST_CMD}
+          echo "::endgroup::"
+
+      - name: Assert injection marker did not leak
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTCOME: ${{ steps.inject.outcome }}
+        run: |
+          set -euo pipefail
+          # gh run view <RUN_ID> --log returns combined logs for ALL
+          # jobs in the run (including this in-progress job's completed
+          # prior steps). We do NOT filter by --job because
+          # ${{ github.job }} is the job_id string, not the numeric
+          # job ID that --job expects. The marker string is unique
+          # enough that whole-run grep is sound.
+          gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>&1 || true
+          if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
+            echo "::error::injection marker leaked — eval hardening regressed"
+            exit 1
+          fi
+          # Secondary sanity check: the replication step should have
+          # failed (pytest errors on the ';' extra argv). If it
+          # succeeded, the fixture is wrong or pytest silently ignores
+          # unknown positionals.
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::expected replication step to fail with unknown argv; outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "Injection neutralised: pytest errored on literal ';' arg and 'PWNED_BY_INJECTION' never executed."
+
+  # F3 — Python quoted setup-command compatibility. Proves eval still
+  # honours single quotes inside setup-command (the image-ocr pattern).
+  python-f3-quoted-setup:
+    name: eval-hardening / python-F3 (quoted setup, expect marker in log)
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      working-directory: tests/fixtures/projects/python-sample
+      setup-command: "printf '%s\\n' 'quote-preservation-ok'"
+      gh-manage-ref: ${{ github.sha }}
+
+  # ========== TypeScript ==========
+
+  # F1 — TypeScript positive: word splitting of pnpm install flags and
+  # a non-default test invocation.
+  typescript-f1-flags:
+    name: eval-hardening / ts-F1 (flags, expect pass)
+    uses: ./.github/workflows/reusable-pr-gate-typescript.yml
+    with:
+      node-version: "20"
+      working-directory: tests/fixtures/projects/typescript-sample
+      install-command: "pnpm install --frozen-lockfile"
+      test-command: "pnpm test -- --run"
+      gh-manage-ref: ${{ github.sha }}
+
+  # F2 — TypeScript injection attempt. Same replication pattern as F2
+  # Python; uses pnpm instead of uv.
+  typescript-f2-injection:
+    name: eval-hardening / ts-F2 (injection neutralised)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node and pnpm
+        uses: ./actions/setup-node-pnpm
+        with:
+          node-version: "20"
+
+      - name: Install fixture deps
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-sample
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Replicate reusable test step (expect failure, marker MUST NOT leak)
+        id: inject
+        continue-on-error: true
+        shell: bash
+        working-directory: tests/fixtures/projects/typescript-sample
+        env:
+          TEST_CMD: "pnpm test ; echo PWNED_BY_INJECTION"
+        run: |
+          set -euo pipefail
+          echo "::group::test"
+          echo "Running test-command: ${TEST_CMD}"
+          ${TEST_CMD}
+          echo "::endgroup::"
+
+      - name: Assert injection marker did not leak
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTCOME: ${{ steps.inject.outcome }}
+        run: |
+          set -euo pipefail
+          # See comment in python-f2-injection assert step for why we
+          # do not filter --job.
+          gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>&1 || true
+          if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
+            echo "::error::injection marker leaked — eval hardening regressed (typescript)"
+            exit 1
+          fi
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::expected replication step to fail; outcome=${OUTCOME}"
+            exit 1
+          fi
+          echo "Injection neutralised (typescript)."
+
+  # F3 — TypeScript quoted setup-command. Guards against future TS
+  # consumers adopting a quoted setup-command.
+  typescript-f3-quoted-setup:
+    name: eval-hardening / ts-F3 (quoted setup, expect marker in log)
+    uses: ./.github/workflows/reusable-pr-gate-typescript.yml
+    with:
+      node-version: "20"
+      working-directory: tests/fixtures/projects/typescript-sample
+      setup-command: "printf '%s\\n' 'ts-quote-preservation-ok'"
+      gh-manage-ref: ${{ github.sha }}
