@@ -86,6 +86,11 @@ value across all 22 consumers is image-ocr's quoted `setup-command`.
 - Consumer forwards untrusted input to `setup-command`. The input description
   will explicitly forbid this; enforcing it in the workflow is not feasible
   without a metachar allow-list, which we explicitly rejected (Q1 option (c)).
+  **`setup-command` remains a security boundary that depends on consumer
+  discipline.** If consumer mis-use of `setup-command` becomes a repeated
+  pattern (e.g., surfaced by future drift-scanner checks or PR reviews), the
+  next step is to add runtime deprecation warnings in a later minor release
+  rather than a silent runtime check.
 - Consumer repository write access attacks. An actor who can modify `ci.yml`
   already has full write and does not need injection.
 - `gh-manage-ref` tampering (covered separately by existing ref-pin policies).
@@ -114,13 +119,47 @@ Identical changes: lines 93 and 133 switch to `${CMD}`, line 118 retains
 
 ### 3. Runtime behaviour after the change
 
+`install-command` and `test-command` (change scope):
+
 | Input value | Old (`eval`) | New (`${CMD}`) |
 |-------------|--------------|---------------|
-| `uv run pytest` | argv: `uv run pytest` | argv: `uv run pytest` ✓ |
-| `uv sync --all-extras` | argv: `uv sync --all-extras` | argv: `uv sync --all-extras` ✓ |
+| `uv run pytest` | argv: `uv`, `run`, `pytest` | argv: `uv`, `run`, `pytest` ✓ |
+| `uv sync --all-extras` | argv: `uv`, `sync`, `--all-extras` | argv: `uv`, `sync`, `--all-extras` ✓ |
 | `uv run pytest tests/ -v --tb=short` | argv: 5 tokens | argv: 5 tokens ✓ |
-| `uv run pytest; echo PWNED` | runs `pytest`, then `echo` | argv: `uv run pytest; echo PWNED` → pytest collection error, job fails, no PWNED emitted |
-| `pip install -e '.[dev,bot]'` (setup-command) | argv: `pip install -e .[dev,bot]` | (unchanged — setup-command keeps `eval`) |
+| `uv run pytest ; echo PWNED` | runs `pytest`, then `echo` | argv: `uv`, `run`, `pytest`, `;`, `echo`, `PWNED` → pytest errors on extra args, job fails, `PWNED` never emitted |
+
+`setup-command` (unchanged — `eval` retained as documented escape hatch):
+
+| Input value | Behaviour |
+|-------------|-----------|
+| `pip install -e '.[dev,bot]'` | argv: `pip`, `install`, `-e`, `.[dev,bot]` (quotes stripped by `eval`). Used today by yakkuro/image-ocr. |
+| Static literal with pipes, redirects, or `$()` | Executed by shell via `eval`. Consumer accepts the security responsibility per the input's description. |
+
+### 4. Input → env-var → shell expansion (workflow wiring, unchanged)
+
+The edit only changes the `run:` body of three steps; the step-level `env:`
+block that binds the reusable-workflow `inputs.*` values to shell environment
+variables is already in place and is preserved:
+
+```yaml
+- name: Install dependencies
+  shell: bash
+  working-directory: ${{ inputs.working-directory }}
+  env:
+    INSTALL_CMD: ${{ inputs.install-command }}  # unchanged binding
+  run: |
+    set -euo pipefail
+    echo "::group::install"
+    echo "Running install-command: ${INSTALL_CMD}"
+    ${INSTALL_CMD}          # was: eval "${INSTALL_CMD}"
+    echo "::endgroup::"
+```
+
+The same `env:` binding exists for `SETUP_CMD` and `TEST_CMD` in their
+respective steps; none of the bindings move. This matters because the
+security property (no GitHub Actions expression re-evaluation of
+user-controlled input) relies on the env-var indirection, and that
+indirection is preserved.
 
 ## Testing strategy
 
@@ -158,14 +197,44 @@ pytest command and the subsequent `echo` prints the marker; under the new
 `${CMD}` behaviour, pytest receives `;`, `echo`, `PWNED_BY_INJECTION` as extra
 positional arguments and errors out without emitting the marker.
 
-Secondary assertion: the test step exits non-zero (pytest fails on the extra
-args). Allow the step to fail via `continue-on-error: true`, then enforce the
-primary assertion in a follow-up step that `grep -L PWNED_BY_INJECTION` over
-the captured step output (or equivalent mechanism available in the runner).
+Concrete implementation sketch (to be finalised during the plan phase):
+
+```yaml
+- name: Invoke reusable PR gate (expects pytest failure)
+  id: invoke
+  continue-on-error: true
+  uses: ./.github/workflows/reusable-pr-gate-python.yml
+  with:
+    test-command: "uv run pytest tests/ ; echo PWNED_BY_INJECTION"
+    # ... other required inputs
+
+- name: Assert injection neutralised
+  shell: bash
+  run: |
+    set -euo pipefail
+    # Fetch the invoked job's logs via gh CLI (the fixture job runs in
+    # the same run, so gh run view --log returns the combined output).
+    gh run view "${{ github.run_id }}" --log \
+      | tee /tmp/pr-gate-output.log
+    if grep -q 'PWNED_BY_INJECTION' /tmp/pr-gate-output.log; then
+      echo "::error::injection marker leaked — eval hardening regressed"
+      exit 1
+    fi
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Secondary assertion: the invoke step ends in failure (pytest errors on the
+extra args). `continue-on-error: true` lets the workflow proceed past that
+step; the primary assertion above is what gates success.
 
 The deliberate choice to **not** use output redirection (`> /tmp/pwned` etc.)
 keeps the marker observable in log output, so a single log-scan assertion is
 sufficient to distinguish old vs new behaviour.
+
+The plan phase will decide whether `gh run view --log` is the right
+capture mechanism or whether a `script -c` wrapper inside the fixture is
+preferable; both produce a greppable log.
 
 **F3 — quoted setup-command (image-ocr compatibility)**
 
@@ -191,8 +260,17 @@ test-command: "pnpm test -- --run"
 test-command: "pnpm test ; echo PWNED_BY_INJECTION"
 ```
 
-F3 is omitted for TypeScript — no TS consumer uses `setup-command` with
-quotes, and the Python F3 already proves the `eval` path stays functional.
+A minimal TS F3 is also included, to guard against future TS consumers
+adopting a quoted setup-command and hitting divergent shell behaviour:
+
+```yaml
+# F3 (TypeScript)
+setup-command: "printf '%s\\n' 'ts-quote-preservation-ok'"
+```
+
+Asserts: the literal string `ts-quote-preservation-ok` appears in the job
+log. Reuses the same mechanism as the Python F3; only the command payload
+differs so the fixture can stand alone in a TS matrix entry.
 
 ## Documentation changes
 
@@ -227,7 +305,9 @@ quotes, and the Python F3 already proves the `eval` path stays functional.
   `eval "${CMD}"`, which allowed command injection when consumers passed
   values sourced from untrusted inputs (PR events, issue bodies). They now
   execute via `${CMD}` (word splitting only).
-  - All 22 bundled yakkuro/* consumers verified unaffected.
+  - All consumers listed in `src/gh_manage/data/repos.yml` as of 2026-04-17
+    (22 repos) verified unaffected by manual inspection of each consumer's
+    `ci.yml` install-command / test-command values.
   - Consumers using shell features (quotes, pipes, redirects) in
     install-command or test-command must migrate them to setup-command or a
     committed shell script.
@@ -254,7 +334,11 @@ precedent.
    fixtures, docs, CHANGELOG.
 2. PR against `main`, four-reviewer protocol per
    `~/.claude/rules/workflow-review.md` (Codex + superpowers:code-reviewer +
-   silent-failure-hunter + code-reviewer).
+   silent-failure-hunter + code-reviewer). The reviewers' scope is the
+   workflow edits, fixtures, docs, and CHANGELOG only. The consumer rollout
+   plan (Section "Consumer rollout") is validated separately by re-reading
+   the spec against the then-current `repos.yml` before opening the 22 bump
+   PRs — this is a pre-flight check, not a code review.
 3. CI green + reviewers approve → squash merge.
 4. On `main`: annotated tag `v1.1.0`, push.
 5. GitHub Release with CHANGELOG `v1.1.0` section as release notes.
@@ -290,10 +374,15 @@ with:
 - Phase 10 AC① (20+ active repos on the reusable workflow) is already
   satisfied at 22/20 and is not affected.
 - Phase 10 AC② (two consecutive weeks of zero critical drift findings) is
-  not affected — drift scanner evaluates `ci.yml` shape against the bundled
-  profile, independently of how the workflow executes internally. The 22
-  consumer bump PRs update the profile pin *in lock-step* with the bundled
-  data, so no new drift is introduced.
+  not affected. Drift scanner checks **whether** each consumer's `ci.yml`
+  specifies the expected reusable-workflow version pin and required inputs,
+  not **how** that workflow executes internally. Two facts combine to keep
+  AC② green across this change:
+  1. The internal switch from `eval "${CMD}"` to `${CMD}` is invisible to
+     the drift scanner (it does not inspect the reusable workflow's bash).
+  2. The 22 consumer bump PRs update each `ci.yml`'s pin from `@v1.0.0` to
+     `@v1.1.0` in lock-step with the bundled profile's expected pin, so the
+     scanner sees pin-equality on the next cron after all bump PRs merge.
 
 ### Risks and rollback
 
@@ -301,7 +390,7 @@ with:
 |------|-----------|
 | An undiscovered consumer pattern fails CI under word splitting. | Survey showed zero such patterns across the 22 consumers. If one surfaces during rollout, the consumer's PR fails CI; migrate that consumer's command to `setup-command` or a script, do not revert v1.1.0. |
 | Tagging mistake (lightweight vs annotated, wrong commit). | Follow `docs/release-checklist.md`; use `git tag -a`. |
-| Rollback needed post-release. | Create a new commit on `main` that restores `eval` in the two affected call sites, tag `v1.1.1`. Do not delete the `v1.1.0` tag. Close unmerged consumer PRs. |
+| Rollback needed post-release. | Create a new commit on `main` that restores `eval` in the two affected call sites, tag `v1.1.1`. Do not delete the `v1.1.0` tag. For unmerged consumer PRs with green CI, leave a comment linking the rollback commit and explaining the reason before closing, so that context is preserved on the PR timeline. |
 
 ## Non-goals
 
@@ -324,8 +413,12 @@ with:
   use `${CMD}` for `install-command` and `test-command`, retain `eval` for
   `setup-command`.
 - [ ] Input descriptions reflect the new trust model.
-- [ ] F1, F2, F3 fixtures exist and are exercised by at least one smoke
-  workflow on PRs that touch `.github/workflows/`.
+- [ ] F1, F2, F3 (Python) and F1, F2, F3 (TypeScript) fixtures exist and are
+  exercised by a dedicated smoke workflow (new file
+  `.github/workflows/eval-hardening-smoke.yml`, preferred) on PRs that touch
+  `.github/workflows/`. Extending the existing self-dogfood `ci.yml` is an
+  acceptable alternative if the fixture matrix can be scoped to avoid
+  perturbing the main PR gate.
 - [ ] F2 assertion proves the string `PWNED_BY_INJECTION` does not appear in
   the job log after the test step.
 - [ ] `docs/security.md` exists; `docs/usage/python.md`,
