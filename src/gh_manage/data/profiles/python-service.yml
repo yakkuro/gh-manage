@@ -8,4 +8,4 @@ files:
     dest: CLAUDE.md
     skip_if_exists: true
 protection_policy: solo-default
-required_contexts: []
+required_contexts: ["PR Gate / PR Gate"]
