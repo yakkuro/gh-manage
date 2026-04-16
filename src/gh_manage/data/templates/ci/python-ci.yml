@@ -15,6 +15,7 @@ permissions:
 jobs:
   pr-gate:
     name: PR Gate
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@main
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.0.0
     with:
       python-version: "3.12"
+      gh-manage-ref: v1.0.0

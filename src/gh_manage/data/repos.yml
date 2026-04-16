@@ -15,6 +15,6 @@ repos:
   - name: yakkuro/vox-speak
     profile: python-service
   - name: yakkuro/nade-nade
-    profile: python-service
+    profile: ts-service
   - name: yakkuro/picshop
     profile: python-service
