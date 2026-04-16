@@ -13,12 +13,12 @@ on:
         type: string
         default: "."
       install-command:
-        description: "Dependency install command executed inside working-directory."
+        description: "Dependency install command executed inside working-directory. Runs via shell word splitting (${CMD}), NOT eval. Shell metacharacters (pipes, quotes, redirects, $(), ;) are not interpreted; pass space-separated arguments only. For commands needing shell features, use setup-command or a committed shell script."
         required: false
         type: string
         default: "pnpm install --frozen-lockfile"
       test-command:
-        description: "Test command executed inside working-directory."
+        description: "Test command executed inside working-directory. Runs via shell word splitting (${CMD}), NOT eval. Shell metacharacters (pipes, quotes, redirects, $(), ;) are not interpreted; pass space-separated arguments only. For commands needing shell features, use setup-command or a committed shell script."
         required: false
         type: string
         default: "pnpm test"
@@ -33,7 +33,7 @@ on:
         type: boolean
         default: true
       setup-command:
-        description: "Optional shell command executed after install, before tests."
+        description: "Optional shell command executed after install, before tests. Runs via `eval` and interprets shell metacharacters (quotes, pipes, $()). SECURITY: only pass static literal values from trusted source. MUST NOT forward github.event.* fields, workflow_dispatch inputs, or any consumer-controlled string — doing so allows remote code execution in the PR gate. See docs/security.md."
         required: false
         type: string
         default: ""
@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           echo "::group::install"
           echo "Running install-command: ${INSTALL_CMD}"
-          eval "${INSTALL_CMD}"
+          ${INSTALL_CMD}
           echo "::endgroup::"
 
       - name: Run eslint (if lint enabled)
@@ -130,5 +130,5 @@ jobs:
           set -euo pipefail
           echo "::group::test"
           echo "Running test-command: ${TEST_CMD}"
-          eval "${TEST_CMD}"
+          ${TEST_CMD}
           echo "::endgroup::"
