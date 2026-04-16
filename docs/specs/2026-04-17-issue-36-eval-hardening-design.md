@@ -197,44 +197,59 @@ pytest command and the subsequent `echo` prints the marker; under the new
 `${CMD}` behaviour, pytest receives `;`, `echo`, `PWNED_BY_INJECTION` as extra
 positional arguments and errors out without emitting the marker.
 
-Concrete implementation sketch (to be finalised during the plan phase):
+Concrete implementation sketch (to be finalised during the plan phase).
+Reusable workflows are invoked at the **job** level (not step level), so the
+fixture needs two sibling jobs in the same run:
 
 ```yaml
-- name: Invoke reusable PR gate (expects pytest failure)
-  id: invoke
-  continue-on-error: true
-  uses: ./.github/workflows/reusable-pr-gate-python.yml
-  with:
-    test-command: "uv run pytest tests/ ; echo PWNED_BY_INJECTION"
-    # ... other required inputs
+jobs:
+  f2-invoke:
+    # The invoked job is expected to fail; mark the whole job as
+    # continue-on-error so the asserting job still runs.
+    continue-on-error: true
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+    with:
+      python-version: "3.12"
+      gh-manage-ref: ${{ github.sha }}
+      test-command: "uv run pytest tests/ ; echo PWNED_BY_INJECTION"
+      # ... other required inputs
 
-- name: Assert injection neutralised
-  shell: bash
-  run: |
-    set -euo pipefail
-    # Fetch the invoked job's logs via gh CLI (the fixture job runs in
-    # the same run, so gh run view --log returns the combined output).
-    gh run view "${{ github.run_id }}" --log \
-      | tee /tmp/pr-gate-output.log
-    if grep -q 'PWNED_BY_INJECTION' /tmp/pr-gate-output.log; then
-      echo "::error::injection marker leaked — eval hardening regressed"
-      exit 1
-    fi
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  f2-assert:
+    needs: f2-invoke
+    if: always()  # run even after f2-invoke fails
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # required for gh run view --log
+    steps:
+      - name: Assert injection neutralised
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # gh run view <RUN_ID> --log returns combined logs for ALL jobs in
+          # the run, including the sibling f2-invoke job. Grep the whole
+          # log for the injection marker.
+          gh run view "${{ github.run_id }}" --log > /tmp/run.log
+          if grep -q 'PWNED_BY_INJECTION' /tmp/run.log; then
+            echo "::error::injection marker leaked — eval hardening regressed"
+            exit 1
+          fi
 ```
 
-Secondary assertion: the invoke step ends in failure (pytest errors on the
-extra args). `continue-on-error: true` lets the workflow proceed past that
-step; the primary assertion above is what gates success.
+Secondary assertion: `f2-invoke` ends in failure (pytest errors on the extra
+args). The `continue-on-error: true` at job level lets `f2-assert` still
+run; the primary log-scan assertion is what gates success.
 
 The deliberate choice to **not** use output redirection (`> /tmp/pwned` etc.)
 keeps the marker observable in log output, so a single log-scan assertion is
 sufficient to distinguish old vs new behaviour.
 
-The plan phase will decide whether `gh run view --log` is the right
-capture mechanism or whether a `script -c` wrapper inside the fixture is
-preferable; both produce a greppable log.
+The plan phase will confirm that `gh run view --log` on GitHub-hosted
+runners returns the sibling-job logs (this is the documented behaviour, but
+should be verified in a throwaway branch before the real fixture relies on
+it).
 
 **F3 — quoted setup-command (image-ocr compatibility)**
 
@@ -246,6 +261,13 @@ Asserts: the literal string `quote-preservation-ok` appears in the job log,
 proving that single quotes in setup-command are still honoured by `eval`.
 (A real `pip install -e '.[dev,bot]'` call would be slow; `printf` is a fast
 equivalent that proves quote preservation.)
+
+`printf` is a **syntactic proxy** for image-ocr's real command. It proves
+that bash's `eval` still parses single-quote grouping correctly — which is
+the only `eval`-level property `pip install -e '.[dev,bot]'` depends on. It
+does not re-validate `pip`'s own argument handling; that responsibility
+stays with image-ocr's own CI, which continues to exercise the full real
+command on every PR.
 
 ### TypeScript fixtures
 
@@ -369,6 +391,16 @@ with:
 - Merge each PR after the consumer's CI (which now invokes the new v1.1.0
   workflow) goes green. Green CI is the per-consumer regression proof.
 
+**Flake handling**: if a consumer's PR gate fails with a non-deterministic
+error unrelated to the v1.1.0 bump (e.g., network hiccup during `uv sync`,
+pre-existing flaky test), re-run the failed job once. If it still fails on
+the second run, treat as a real regression: park the PR, investigate the
+consumer's command pattern for a missed metachar dependency, and either
+migrate that consumer's command to `setup-command` or raise it as a scope
+change back to this spec. Do **not** merge a consumer bump on flaky-green
+(pattern: single failure then single pass with no apparent cause) — require
+two consecutive green runs for any consumer that failed at least once.
+
 ### Interaction with Phase 10
 
 - Phase 10 AC① (20+ active repos on the reusable workflow) is already
@@ -421,9 +453,13 @@ with:
   perturbing the main PR gate.
 - [ ] F2 assertion proves the string `PWNED_BY_INJECTION` does not appear in
   the job log after the test step.
-- [ ] `docs/security.md` exists; `docs/usage/python.md`,
-  `docs/usage/typescript.md`, `docs/versioning.md`, and `CHANGELOG.md`
-  are updated.
+- [ ] `docs/security.md` exists (~100 lines, trust-model table + examples
+  + version history) and is linked from both `docs/usage/python.md` and
+  `docs/usage/typescript.md` in the `setup-command` section.
+- [ ] `docs/usage/python.md`, `docs/usage/typescript.md`,
+  `docs/versioning.md`, and `CHANGELOG.md` are updated as described in the
+  Documentation changes section; the four-reviewer PR review confirms each
+  file's diff.
 - [ ] `v1.1.0` tag pushed, GitHub Release created.
 - [ ] 22 consumer PRs opened, merged, with green CI for each.
 - [ ] Issue #36 closed via the implementation PR.
