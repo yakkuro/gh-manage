@@ -22,7 +22,7 @@ jobs:
       - uses: astral-sh/setup-uv@v4
 
       - name: Install gh-manage
-        run: uv tool install git+https://github.com/yakkuro/gh-manage@cli/v0.6.0
+        run: uv tool install git+https://github.com/yakkuro/gh-manage@main
 
       - name: Run drift scanner
         run: gh-manage drift --all --report-mode issue --severity low
