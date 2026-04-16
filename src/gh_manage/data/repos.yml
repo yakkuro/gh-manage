@@ -18,3 +18,7 @@ repos:
     profile: python-service
   - name: yakkuro/picshop
     profile: python-service
+  - name: yakkuro/shorts-factory
+    profile: python-service
+  - name: yakkuro/polyagent
+    profile: python-service
