@@ -30,7 +30,7 @@ def test_production_data_loads() -> None:
 
 def test_build_desired_on_production_solo_default_matches_expected() -> None:
     """build_desired_protection(solo-default, python-service) produces the
-    canonical PUT body shape with contexts [] (empty list override)."""
+    canonical PUT body shape with contexts overridden by profile.required_contexts."""
     bp_path = Path(str(files("gh_manage.data") / "branch-protection.yml"))
     bp_config = load_config(bp_path, BranchProtectionConfig)
     profile_path = Path(str(files("gh_manage.data.profiles") / "python-service.yml"))
