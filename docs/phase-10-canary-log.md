@@ -27,10 +27,11 @@
    - **Resolution**: `type-check: false` as default for all adoption PRs
 
 2. **PostgreSQL service dependency** (canary #2)
-   - polyagent tests require PostgreSQL (via asyncpg)
+   - polyagent's conftest.py defines a `db_pool` fixture requiring PostgreSQL (via asyncpg)
+   - Only `test_memory.py` uses the real DB fixture; `test_integration.py` and `test_lifecycle.py` use `MockMemoryStore`
    - Reusable workflow cannot declare `services:` block (workflow_call limitation)
-   - 3 of 12 test files need DB: test_integration.py, test_lifecycle.py, test_memory.py
-   - **Resolution**: `test-command` with `--ignore` for DB tests; existing pr-gate.yml covers full suite
+   - **Resolution**: `test-command` with `--ignore=tests/test_memory.py`; existing pr-gate.yml covers full suite
+   - **Note**: Adoption PR conservatively ignored all 3 files; a follow-up can narrow to `test_memory.py` only
 
 3. **Optional dev dependencies** (canary #2)
    - polyagent uses `[project.optional-dependencies]` for dev tools
@@ -40,7 +41,7 @@
 ## Recipe refinements for batch phase
 
 - Default all adoption PRs with `type-check: false`
-- Check for `[project.optional-dependencies]` → use `install-command: "uv sync --all-extras"` if present
+- Check for `[project.optional-dependencies]` → use `install-command: "uv sync --extra dev"` if dev extras exist (prefer targeted extras over `--all-extras` to avoid pulling unnecessary dependencies)
 - Check for service dependencies (PostgreSQL, Redis, etc.) → customize `test-command` with `--ignore` for dependent tests
 - Tier 1 repos (batch 1) are expected to be simpler (no services), but verify during batch
 
