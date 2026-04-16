@@ -33,3 +33,22 @@ def test_python_ci_template_has_python_version() -> None:
     parsed = yaml.safe_load(content)
     job = parsed["jobs"]["pr-gate"]
     assert "python-version" in job["with"]
+
+
+def test_python_ci_template_has_workflow_dispatch() -> None:
+    """Template must support manual workflow triggering.
+
+    Note: PyYAML parses the YAML key ``on:`` as boolean True,
+    so we index with ``True`` instead of the string ``"on"``.
+    """
+    content = (files("gh_manage.data.templates") / "ci" / "python-ci.yml").read_text()
+    parsed = yaml.safe_load(content)
+    triggers = parsed[True]  # YAML 'on:' → Python True
+    assert "workflow_dispatch" in triggers
+
+
+def test_python_ci_template_has_minimal_permissions() -> None:
+    """Template must request minimal permissions per security best practice."""
+    content = (files("gh_manage.data.templates") / "ci" / "python-ci.yml").read_text()
+    parsed = yaml.safe_load(content)
+    assert parsed.get("permissions", {}).get("contents") == "read"
