@@ -30,3 +30,11 @@ repos:
     profile: python-service
   - name: yakkuro/shelf-brain
     profile: python-service
+  - name: yakkuro/port-registry
+    profile: python-service
+  - name: yakkuro/git-digest
+    profile: python-service
+  - name: yakkuro/image-ocr
+    profile: python-service
+  - name: yakkuro/tg-commander
+    profile: python-service
