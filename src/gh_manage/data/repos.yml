@@ -38,3 +38,7 @@ repos:
     profile: python-service
   - name: yakkuro/tg-commander
     profile: python-service
+  - name: yakkuro/codelens
+    profile: python-service
+  - name: yakkuro/deep-research
+    profile: python-service
