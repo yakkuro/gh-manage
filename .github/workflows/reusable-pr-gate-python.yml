@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           echo "::group::install"
           echo "Running install-command: ${INSTALL_CMD}"
-          ${INSTALL_CMD}
+          eval "${INSTALL_CMD}"
           echo "::endgroup::"
 
       - name: Run ruff (if lint enabled)
@@ -115,7 +115,7 @@ jobs:
           set -euo pipefail
           echo "::group::setup-command"
           echo "Running setup-command: ${SETUP_CMD}"
-          if ! ${SETUP_CMD}; then
+          if ! eval "${SETUP_CMD}"; then
             echo "::error::setup-command failed: ${SETUP_CMD}"
             exit 1
           fi
@@ -130,5 +130,5 @@ jobs:
           set -euo pipefail
           echo "::group::test"
           echo "Running test-command: ${TEST_CMD}"
-          ${TEST_CMD}
+          eval "${TEST_CMD}"
           echo "::endgroup::"
