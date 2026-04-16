@@ -25,12 +25,12 @@ def test_production_data_loads() -> None:
     profile_path = Path(str(files("gh_manage.data.profiles") / "python-service.yml"))
     profile = load_config(profile_path, ProfileSpec)
     assert profile.protection_policy == "solo-default"
-    assert profile.required_contexts == []
+    assert profile.required_contexts == ["PR Gate / PR Gate"]
 
 
 def test_build_desired_on_production_solo_default_matches_expected() -> None:
     """build_desired_protection(solo-default, python-service) produces the
-    canonical PUT body shape with contexts [] (empty list override)."""
+    canonical PUT body shape with contexts overridden by profile.required_contexts."""
     bp_path = Path(str(files("gh_manage.data") / "branch-protection.yml"))
     bp_config = load_config(bp_path, BranchProtectionConfig)
     profile_path = Path(str(files("gh_manage.data.profiles") / "python-service.yml"))
@@ -41,7 +41,7 @@ def test_build_desired_on_production_solo_default_matches_expected() -> None:
     assert body == {
         "required_status_checks": {
             "strict": True,
-            "contexts": [],  # profile.required_contexts override
+            "contexts": ["PR Gate / PR Gate"],  # profile.required_contexts override
         },
         "enforce_admins": False,
         "required_pull_request_reviews": {
