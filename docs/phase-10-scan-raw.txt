@@ -1,0 +1,23 @@
+deep-research|TIER3|No tests|0.0|uv.lock=YES|src=NO
+researcher|TIER3|No pyproject.toml|0.0
+shorts-factory|TIER1|tests=11|ruff=YES|fmt=YES|uv=YES|src=YES|score=4.0|
+MoneyPrinterV2|TIER3|No pyproject.toml|0.0
+claude-insight|TIER3|No pyproject.toml|0.0
+autodev|TIER3|No pyproject.toml|0.0
+tg-commander|TIER1.5|tests=3|ruff=YES|fmt=YES|uv=NO|src=YES|score=3.3|Missing uv.lock
+repo-init|TIER1.5|tests=3|ruff=YES|fmt=YES|uv=NO|src=YES|score=3.3|Missing uv.lock
+git-digest|TIER1.5|tests=7|ruff=YES|fmt=YES|uv=NO|src=YES|score=3.7|Missing uv.lock
+matome|TIER3|Python 3.11 < 3.12|0.0
+polyagent|TIER1|tests=12|ruff=YES|fmt=YES|uv=YES|src=YES|score=4.0|
+polytrader|TIER2|tests=25|ruff=NO|fmt=YES|uv=YES|src=YES|score=3.0|ruff violations
+image-ocr|TIER1.5|tests=5|ruff=YES|fmt=YES|uv=NO|src=YES|score=3.5|Missing uv.lock
+voice-works|TIER2|tests=5|ruff=NO|fmt=YES|uv=YES|src=YES|score=2.5|ruff violations
+vtube|TIER3|No tests|0.0|uv.lock=YES|src=NO
+ychat|TIER3|Python 3.10 < 3.12|0.0
+shelf-brain|TIER2|tests=11|ruff=NO|fmt=NO|uv=YES|src=YES|score=2.0|ruff violations,format issues
+port-registry|TIER1.5|tests=14|ruff=YES|fmt=YES|uv=YES|src=NO|score=4.0|No src/ directory; needs type-check: false
+vaporwave-generator|TIER3|No pyproject.toml|0.0
+codelens|TIER2|tests=12|ruff=NO|fmt=YES|uv=YES|src=YES|score=3.0|ruff violations
+anichat|TIER3|No pyproject.toml|0.0
+waifuforge|TIER3|No pyproject.toml|0.0
+multi-agents|TIER1|tests=3|ruff=YES|fmt=YES|uv=YES|src=YES|score=3.3|
