@@ -2,103 +2,28 @@
 
 from __future__ import annotations
 
-import functools
-import re
 import sys
-from collections.abc import Callable
-from importlib.resources import files
 from pathlib import Path
-from typing import Any, TypeVar
 
 import click
 
 from gh_manage import git_cli, protection_sync
-from gh_manage.config import ConfigError, ConfigValidationError, load_config
-from gh_manage.git_cli import GitError
+from gh_manage.commands._shared import (
+    handle_errors,
+    resolve_backup_dir,
+    resolve_branch_protection_path,
+    resolve_profile_path,
+)
+from gh_manage.config import ConfigValidationError, load_config
 from gh_manage.github_api import protection as protection_api
-from gh_manage.github_client import GhError, GhNotFoundError
+from gh_manage.github_client import GhNotFoundError
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.profiles import ProfileSpec
 from gh_manage.protection_sync import (
     ProtectionDiff,
     ProtectionDowngradeError,
-    ProtectionError,
     ProtectionPolicyNotFoundError,
 )
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-_VALID_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def _handle_errors(func: _F) -> _F:
-    """Decorator: catch all domain errors and re-raise as ClickException."""
-
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except (
-            GhError,
-            ConfigError,
-            GitError,
-            ProtectionError,
-        ) as e:
-            raise click.ClickException(str(e)) from e
-
-    return wrapper  # type: ignore[return-value]
-
-
-def _resolve_profile_path(name: str) -> Path:
-    """Resolve a profile name to a package-data Path.
-
-    Profile names are bundle identifiers, NOT user paths. They MUST be a
-    single segment matching `[A-Za-z0-9][A-Za-z0-9._-]*` — anything else
-    (slashes, `..`, leading dot, empty) is rejected to prevent reading
-    arbitrary YAML files outside the bundled profiles directory.
-
-    After resolution the candidate path is re-checked against the profiles
-    root with `Path.resolve() + is_relative_to()` as a defense-in-depth
-    layer.
-
-    Raises ConfigError if the name is invalid or the profile YAML doesn't
-    exist.
-    """
-    from gh_manage.config import ConfigFileNotFoundError
-
-    if not name or not _VALID_PROFILE_NAME_RE.match(name):
-        raise ConfigFileNotFoundError(
-            f"Invalid profile name: {name!r}. Profile names must be a single "
-            f"identifier (alphanumeric plus `._-`, not starting with `.`). "
-            f"Path separators and `..` are not allowed."
-        )
-
-    profiles_root = Path(str(files("gh_manage.data.profiles"))).resolve()
-    candidate = (profiles_root / f"{name}.yml").resolve()
-
-    if not candidate.is_relative_to(profiles_root):
-        raise ConfigFileNotFoundError(
-            f"Profile path resolved outside the bundled profiles directory: "
-            f"{name!r} → {candidate}. This should not happen with a valid "
-            f"profile name; if it does, it indicates a packaging bug."
-        )
-
-    if not candidate.is_file():
-        raise ConfigFileNotFoundError(
-            f"Profile not found: {name!r}. "
-            f"Looked in {profiles_root}. "
-            f"Available profiles can be listed with `gh manage profiles list` "
-            f"(not yet implemented)."
-        )
-    return candidate
-
-
-def _resolve_branch_protection_path() -> Path:
-    return Path(str(files("gh_manage.data") / "branch-protection.yml"))
-
-
-def _resolve_backup_dir() -> Path:
-    return Path.home() / ".gh-manage" / "backups"
 
 
 def _is_tty_stdin() -> bool:
@@ -142,7 +67,7 @@ def _load_profile_and_policy(
     Raises ConfigValidationError or ProtectionPolicyNotFoundError on
     mismatch.
     """
-    profile_path = _resolve_profile_path(profile_name)
+    profile_path = resolve_profile_path(profile_name)
     profile = load_config(profile_path, ProfileSpec)
     if profile.name != profile_name:
         raise ConfigValidationError(
@@ -155,7 +80,7 @@ def _load_profile_and_policy(
             f"Add `protection_policy: <name>` to the profile YAML and try again."
         )
 
-    bp_config = load_config(_resolve_branch_protection_path(), BranchProtectionConfig)
+    bp_config = load_config(resolve_branch_protection_path(), BranchProtectionConfig)
     if profile.protection_policy not in bp_config.policies:
         raise ProtectionPolicyNotFoundError(
             f"Policy {profile.protection_policy!r} not found in "
@@ -200,7 +125,7 @@ def protection() -> None:
     is_flag=True,
     help="Skip interactive confirmation (required for non-TTY downgrade).",
 )
-@_handle_errors
+@handle_errors
 def sync(
     path: Path,
     profile_name: str,
@@ -266,7 +191,7 @@ def sync(
                 "downgrade in CI/non-interactive contexts."
             )
 
-    backup_dir = _resolve_backup_dir()
+    backup_dir = resolve_backup_dir()
     click.echo("")
     protection_sync.apply_protection_diff(
         diff,
@@ -296,7 +221,7 @@ def sync(
     is_flag=True,
     help="Suppress the exit-1 signal when downgrade is detected (for CI drift checks).",
 )
-@_handle_errors
+@handle_errors
 def diff_cmd(path: Path, profile_name: str, downgrade_allowed: bool) -> None:
     """Show diff between current protection and profile + policy state.
 

@@ -13,19 +13,20 @@ Architecture:
 
 from __future__ import annotations
 
-import functools
-import re
-from collections.abc import Callable
-from importlib.resources import files
 from pathlib import Path
-from typing import Any, TypeVar
 
 import click
 
 from gh_manage import drift_sync, git_cli
+from gh_manage.commands._shared import (
+    handle_errors,
+    resolve_branch_protection_path,
+    resolve_default_labels_path,
+    resolve_profile_path,
+    resolve_repos_path,
+)
 from gh_manage.config import (
     ConfigError,
-    ConfigFileNotFoundError,
     load_config,
 )
 from gh_manage.drift_sync import (
@@ -41,70 +42,6 @@ from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
 from gh_manage.profile_sync import ProfileError
 from gh_manage.protection_sync import ProtectionError
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _handle_errors(func: _F) -> _F:
-    """Decorator: catch GhError / ConfigError / GitError / ProfileError /
-    ProtectionError / DriftError and re-raise as click.ClickException
-    (exit 1 with `Error: <msg>`)."""
-
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except (
-            GhError,
-            ConfigError,
-            GitError,
-            ProfileError,
-            ProtectionError,
-            DriftError,
-        ) as e:
-            raise click.ClickException(str(e)) from e
-
-    return wrapper  # type: ignore[return-value]
-
-
-_VALID_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def _resolve_profile_path(name: str) -> Path:
-    """Resolve a profile name to a bundled YAML path with path-traversal
-    defense. Mirrors commands/init.py's helper."""
-    if not name or not _VALID_PROFILE_NAME_RE.match(name):
-        raise ConfigFileNotFoundError(
-            f"Invalid profile name: {name!r}. Profile names must be a single "
-            f"identifier (alphanumeric plus `._-`, not starting with `.`). "
-            f"Path separators and `..` are not allowed."
-        )
-
-    profiles_root = Path(str(files("gh_manage.data.profiles"))).resolve()
-    candidate = (profiles_root / f"{name}.yml").resolve()
-    if not candidate.is_relative_to(profiles_root):
-        raise ConfigFileNotFoundError(
-            f"Profile path resolved outside the bundled profiles directory: "
-            f"{name!r} → {candidate}."
-        )
-    if not candidate.is_file():
-        raise ConfigFileNotFoundError(
-            f"Profile not found: {name!r}. Looked in {profiles_root}."
-        )
-    return candidate
-
-
-def _resolve_default_labels_path() -> Path:
-    return Path(str(files("gh_manage.data") / "labels.yml"))
-
-
-def _resolve_branch_protection_path() -> Path:
-    return Path(str(files("gh_manage.data") / "branch-protection.yml"))
-
-
-def _resolve_repos_path() -> Path:
-    """Resolve the bundled repos.yml path."""
-    return Path(str(files("gh_manage.data") / "repos.yml"))
 
 
 def _scan_single_repo(
@@ -133,13 +70,13 @@ def _scan_single_repo(
     default_branch = repo_info.get_default_branch(owner_repo)
 
     # Load profile and configs
-    profile = load_config(_resolve_profile_path(profile_name), ProfileSpec)
-    labels_config = load_config(_resolve_default_labels_path(), LabelsConfig)
+    profile = load_config(resolve_profile_path(profile_name), ProfileSpec)
+    labels_config = load_config(resolve_default_labels_path(), LabelsConfig)
 
     bp_config: BranchProtectionConfig | None = None
     if profile.protection_policy is not None:
         bp_config = load_config(
-            _resolve_branch_protection_path(), BranchProtectionConfig
+            resolve_branch_protection_path(), BranchProtectionConfig
         )
         if profile.protection_policy not in bp_config.policies:
             from gh_manage.protection_sync import ProtectionPolicyNotFoundError
@@ -218,7 +155,7 @@ def _scan_all_repos(
     """
     from gh_manage.models.repos import ReposConfig
 
-    repos_path = _resolve_repos_path()
+    repos_path = resolve_repos_path()
     config = load_config(repos_path, ReposConfig)
 
     results = []
@@ -308,7 +245,7 @@ def _scan_all_repos(
     default=None,
     help="Write the report to this file instead of stdout.",
 )
-@_handle_errors
+@handle_errors
 def drift(
     path: Path | None,
     profile_name: str | None,
