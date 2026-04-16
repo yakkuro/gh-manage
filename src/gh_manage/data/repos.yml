@@ -22,3 +22,11 @@ repos:
     profile: python-service
   - name: yakkuro/polyagent
     profile: python-service
+  - name: yakkuro/multi-agents
+    profile: python-service
+  - name: yakkuro/polytrader
+    profile: python-service
+  - name: yakkuro/voice-works
+    profile: python-service
+  - name: yakkuro/shelf-brain
+    profile: python-service
