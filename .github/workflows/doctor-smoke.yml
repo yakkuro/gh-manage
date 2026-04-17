@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   self-dogfood:
-    name: doctor-smoke / gh-manage self (expect clean)
+    name: doctor-smoke / gh-manage self (no criticals)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,8 +40,25 @@ jobs:
           set -euo pipefail
           uv sync --all-extras
 
-      - name: Run doctor on this checkout
+      # Self-dogfood uses a local `./...` reusable reference and its
+      # own protection config, so shape/reusable-adoption (medium) and
+      # shape/required-contexts-match (high) can both legitimately
+      # fire against gh-manage itself without being smoke regressions.
+      # The smoke check what we CARE about here is "no critical" —
+      # that's the one doctor exists to catch. Informational findings
+      # still surface in the JSON artifact so maintainers can track
+      # them over time.
+      - name: Run doctor (exit 1 on critical only)
         shell: bash
         run: |
           set -euo pipefail
-          uv run gh-manage doctor . --profile python-service --report-mode stdout
+          uv run gh-manage doctor . --profile python-service \
+            --severity critical --report-mode stdout
+
+      - name: Emit full report (informational)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run gh-manage doctor . --profile python-service \
+            --report-mode stdout --exit-zero
