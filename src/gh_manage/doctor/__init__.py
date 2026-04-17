@@ -65,11 +65,20 @@ def _fetch_remote_ci_yml(repo: str) -> str:
     """Return ci.yml contents for owner/repo, or '' if the file is absent.
 
     The GitHub contents API returns a JSON object with `content`
-    base64-encoded. run_gh_api already parses the response as JSON.
-    Non-404 decode failures (malformed base64, bad UTF-8) are wrapped
-    in DoctorError with context so callers see an actionable message
-    instead of a raw traceback. GhError other than 404 propagates —
-    it's usually auth or rate limit, and the caller should know.
+    base64-encoded for a file path. run_gh_api already parses the
+    response as JSON.
+
+    Error handling:
+    - `GhNotFoundError` (HTTP 404) → return "": the ci.yml genuinely
+      doesn't exist. This is the only case that maps to "absent".
+    - Response shaped unexpectedly (not a dict, or dict without
+      `content`) → raise DoctorError. GitHub's contents API returns a
+      list for directory paths; a list here means we somehow queried a
+      directory instead of a file and silently treating it as "absent"
+      would make doctor return green for a case doctor should surface.
+    - base64/UTF-8 decode failures → raise DoctorError with repo context.
+    - Any other GhError (403, 401, 5xx, rate limit) → propagates
+      unchanged; the caller sees a real auth/operational error.
     """
     import binascii
 
@@ -79,7 +88,14 @@ def _fetch_remote_ci_yml(repo: str) -> str:
         return ""
 
     if not isinstance(payload, dict) or "content" not in payload:
-        return ""
+        raise DoctorError(
+            f"GitHub contents API for {repo}/.github/workflows/ci.yml "
+            f"returned an unexpected shape ({type(payload).__name__}); "
+            f"expected a file object with a 'content' field. "
+            f"If the path is actually a directory in this repo, the "
+            f"consumer's ci.yml layout has drifted from the expected "
+            f"single-file shape and needs manual investigation."
+        )
 
     try:
         return base64.b64decode(payload["content"]).decode("utf-8")

@@ -240,10 +240,13 @@ def apply_files_diff(
     as OSError. No rollback by design — recovery is via `git status` /
     `git checkout`.
 
-    Returns list of paths created or overwritten by this call. init uses
-    this for post-apply doctor rollback (spec §5.B). Overwrite restoration
-    (tempdir backup) is not implemented in this release — rollback only
-    unlinks files that init just created.
+    Returns list of paths init just CREATED (did not exist before). Paths
+    that were overwritten via --force are deliberately NOT returned: init's
+    doctor-rollback unlinks every path in the returned list, and unlinking
+    an overwritten path would destroy the user's pre-existing content
+    (spec §5.B defers tempdir-backup restoration to a future release).
+    Callers that need an exhaustive touched list should either extend this
+    contract or back up overwrites upstream.
 
     `progress` is called with a one-line description per WRITE
     operation (not per skipped/noop entry).
@@ -252,7 +255,7 @@ def apply_files_diff(
         raise ProfileConflictError(diff.overwrites)
 
     target_root_resolved = target_root.resolve()
-    touched: list[Path] = []
+    created: list[Path] = []
 
     def _safe_write(source: Path, dest: Path) -> None:
         # TOCTOU re-validation
@@ -280,11 +283,12 @@ def apply_files_diff(
     for create in diff.creates:
         progress(f"+ create   {create.dest}")
         _safe_write(create.source, create.dest)
-        touched.append(create.dest)
+        created.append(create.dest)
 
     for overwrite in diff.overwrites:
         progress(f"! overwrite {overwrite.dest}")
         _safe_write(overwrite.source, overwrite.dest)
-        touched.append(overwrite.dest)
+        # Not appended to `created`: init's rollback would destroy
+        # the user's pre-existing content. Spec §5.B.
 
-    return touched
+    return created

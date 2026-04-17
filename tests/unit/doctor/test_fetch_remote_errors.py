@@ -40,10 +40,14 @@ def test_fetch_remote_ci_yml_returns_empty_on_404():
         assert _fetch_remote_ci_yml("yakkuro/example") == ""
 
 
-def test_fetch_remote_ci_yml_returns_empty_on_unexpected_shape():
+def test_fetch_remote_ci_yml_raises_on_unexpected_shape():
     from gh_manage.doctor import _fetch_remote_ci_yml
+    from gh_manage.doctor.errors import DoctorError
 
-    # GitHub API could theoretically return a list (for dir listings).
-    # Treat as "file absent" rather than crashing.
+    # Codex review (HIGH #3): silently treating a list response as
+    # "file absent" could mask real drift (directory in place of file,
+    # API wrapper change, etc.). Raise instead of swallowing.
     with patch("gh_manage.doctor.run_gh_api", return_value=[]):
-        assert _fetch_remote_ci_yml("yakkuro/example") == ""
+        with pytest.raises(DoctorError) as excinfo:
+            _fetch_remote_ci_yml("yakkuro/example")
+    assert "yakkuro/example" in str(excinfo.value)

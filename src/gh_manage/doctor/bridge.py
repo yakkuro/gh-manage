@@ -4,17 +4,21 @@ drift_sync's register_check wants `(ScanContext) -> tuple[Finding, ...]`.
 doctor's run_checks wants `CheckContext`. This bridge is the adapter.
 
 Error semantics (spec §4):
-- DoctorCheckError from doctor is caught and converted into a single
-  medium-severity `shape/check-error` finding. Keeps a per-repo scan
-  failure from aborting a multi-repo drift scan.
-- Any other exception propagates — it's a bug, and drift's caller
-  already has a clear-traceback mode.
+- Any DoctorError subclass (including CiYmlParseError from a built-in
+  check's YAML parse failure) is caught and converted into a single
+  medium-severity `shape/check-error` finding. Keeps one malformed
+  repo from aborting a multi-repo drift scan.
+- OSError from local ci.yml reads (permission denied, is-a-directory
+  etc.) is also caught and converted: these are per-repo IO issues,
+  not orchestration bugs, and should not abort --all scans either.
+- Any other exception propagates — it's a genuine bug, and drift's
+  caller already has a clear-traceback mode.
 """
 
 from __future__ import annotations
 
 from gh_manage.doctor.context import CheckContext
-from gh_manage.doctor.errors import DoctorCheckError
+from gh_manage.doctor.errors import DoctorError
 from gh_manage.doctor.registry import run_checks as doctor_run_checks
 from gh_manage.drift_sync import ScanContext, register_check
 from gh_manage.findings import Finding
@@ -51,7 +55,11 @@ def check_shape(ctx: ScanContext) -> tuple[Finding, ...]:
     try:
         doctor_ctx = _build_check_context(ctx)
         return doctor_run_checks(doctor_ctx)
-    except DoctorCheckError as e:
+    except (DoctorError, OSError) as e:
+        # Per spec §4: per-repo failures become a medium shape/check-error
+        # finding so one malformed repo doesn't abort a --all scan. OSError
+        # catches PermissionError / IsADirectoryError / etc. from the
+        # local ci.yml read that are operational, not bugs.
         return (
             Finding(
                 severity="medium",
@@ -60,7 +68,7 @@ def check_shape(ctx: ScanContext) -> tuple[Finding, ...]:
                 field_path="doctor:bridge",
                 current_value=None,
                 desired_value=None,
-                message=f"doctor check failed: {e}",
+                message=f"doctor check failed: {type(e).__name__}: {e}",
                 remediation="Re-run `gh-manage doctor <repo>` for detail.",
             ),
         )
