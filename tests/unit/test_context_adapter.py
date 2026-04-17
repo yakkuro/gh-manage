@@ -17,6 +17,7 @@ def test_scan_context_covers_check_context_required_fields():
     expected_fields = {
         "repo",  # CheckContext.repo
         "profile",  # source for CheckContext.profile_name
+        "live_required_contexts",  # CheckContext.required_contexts
     }
     missing = expected_fields - scan_fields
     assert not missing, (

@@ -72,6 +72,9 @@ class ScanContext:
     - labels_config: the loaded bundled labels.yml.
     - bp_config: the loaded bundled branch-protection.yml, or None if
       profile.protection_policy is None (opt-out).
+    - live_required_contexts: tuple of status-check contexts required by
+      the repo's branch-protection policy, resolved from the remote repo.
+      Defaults to empty to avoid breaking existing call sites.
     """
 
     path: Path
@@ -80,6 +83,7 @@ class ScanContext:
     profile: ProfileSpec
     labels_config: LabelsConfig
     bp_config: BranchProtectionConfig | None
+    live_required_contexts: tuple[str, ...] = ()
 
 
 # ========== Error Hierarchy ==========
@@ -773,3 +777,8 @@ def resolve_drift_issue(
             return f"Closed issue #{issue_number} on {repo} (zero drift, 24h rule satisfied)"
 
     return f"Updated issue #{issue_number} on {repo} ({len(findings)} findings)"
+
+
+# Side-effect import: doctor.bridge.check_shape registers with drift's
+# registry on module load. Spec §4.
+from gh_manage.doctor import bridge as _doctor_bridge  # noqa: F401, E402
