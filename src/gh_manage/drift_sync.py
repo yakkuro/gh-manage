@@ -47,36 +47,16 @@ from datetime import datetime, timedelta
 from importlib.resources import files as _package_files
 from itertools import chain
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
 
 
-# ========== Data Model ==========
+# ========== Data Model (moved to findings.py in cli/v1.2.0) ==========
 
-
-Severity = Literal["critical", "high", "medium", "low"]
-
-
-@dataclass(frozen=True)
-class Finding:
-    """One drift finding. Frozen, comparable, hashable.
-
-    Phase 8 uses per-item granularity: 10 missing labels produce 10
-    findings. Group rendering (if ever needed) happens at the report
-    layer; the Finding itself is atomic.
-    """
-
-    severity: Severity
-    check: str  # "labels" | "protection" | "profile_files"
-    repo: str  # "owner/repo"
-    field_path: str  # e.g. "labels[priority/critical]", "enforce_admins", "CLAUDE.md"
-    current_value: Any  # current value on the repo (None if missing)
-    desired_value: Any  # desired value per profile/policy (None if extraneous)
-    message: str  # human-readable 1-line explanation
-    remediation: str | None = None  # optional fix command
+from gh_manage.findings import Finding, Severity  # noqa: F401
 
 
 @dataclass(frozen=True)
