@@ -87,3 +87,47 @@ def check_job_shape_coherence(ctx: CheckContext) -> tuple[Finding, ...]:
         )
 
     return tuple(findings)
+
+
+@register_check("shape/reusable-adoption")
+def check_reusable_adoption(ctx: CheckContext) -> tuple[Finding, ...]:
+    """medium: flag repos in repos.yml that don't use a reusable-pr-gate.
+
+    Severity is medium because bespoke CI is sometimes intentional
+    (e.g., shelf-brain's postgres service requirement). The finding
+    makes the choice explicit rather than silent.
+
+    Spec §3 check 2.
+    """
+    ci_yml = _parse_ci_yml(ctx.ci_yml_text, ctx.source_hint)
+    has_reusable = any(True for _ in _iter_reusable_jobs(ci_yml))
+    if has_reusable:
+        return ()
+    if not ctx.ci_yml_text.strip():
+        msg = (
+            "No .github/workflows/ci.yml found; repo lists in repos.yml "
+            f"with profile {ctx.profile_name!r} but uses no reusable "
+            "gh-manage workflow."
+        )
+    else:
+        msg = (
+            "ci.yml is present but no job uses the reusable-pr-gate "
+            f"workflow; profile {ctx.profile_name!r} expects adoption."
+        )
+    return (
+        Finding(
+            severity="medium",
+            check="shape/reusable-adoption",
+            repo=ctx.repo,
+            field_path=".github/workflows/ci.yml",
+            current_value="bespoke (no reusable-pr-gate-*)",
+            desired_value=(
+                "uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-*.yml@<ref>"
+            ),
+            message=msg,
+            remediation=(
+                "Adopt the reusable workflow, OR remove the repo from "
+                "repos.yml if intentionally bespoke."
+            ),
+        ),
+    )

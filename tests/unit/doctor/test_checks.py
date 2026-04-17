@@ -83,3 +83,65 @@ def test_shape_job_shape_coherence_empty_ci_yml_produces_no_findings():
 
     findings = check_job_shape_coherence(_ctx("", required=("PR Gate / PR Gate",)))
     assert findings == ()
+
+
+def test_shape_reusable_adoption_fires_when_no_reusable_job():
+    ci_yml = """
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make ci
+"""
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text=ci_yml,
+        profile_name="python-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    findings = check_reusable_adoption(ctx)
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert findings[0].check == "shape/reusable-adoption"
+
+
+def test_shape_reusable_adoption_silent_when_reusable_present():
+    ci_yml = """
+jobs:
+  pr-gate:
+    name: "PR Gate"
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.1.0
+"""
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text=ci_yml,
+        profile_name="python-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    assert check_reusable_adoption(ctx) == ()
+
+
+def test_shape_reusable_adoption_fires_when_ci_yml_missing():
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text="",
+        profile_name="python-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    findings = check_reusable_adoption(ctx)
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert (
+        "no .github/workflows/ci.yml found" in findings[0].message.lower()
+        or "missing" in findings[0].message.lower()
+    )
