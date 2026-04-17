@@ -64,7 +64,7 @@ def _fetch_rate_limit_reset() -> datetime | None:
 
     try:
         return datetime.fromtimestamp(int(reset_ts), tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+    except (ValueError, OverflowError, OSError, TypeError):
         return None
 
 

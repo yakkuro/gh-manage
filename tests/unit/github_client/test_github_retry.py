@@ -71,6 +71,22 @@ def test_fetch_rate_limit_reset_returns_none_on_subprocess_timeout(
     assert _fetch_rate_limit_reset() is None
 
 
+def test_fetch_rate_limit_reset_returns_none_on_non_convertible_reset(
+    mocker: MockerFixture,
+) -> None:
+    """Malformed API payload where 'reset' is not an int-convertible value.
+
+    Docstring promises "never raises" — protects against int({}) TypeError.
+    """
+    from gh_manage.github_retry import _fetch_rate_limit_reset
+
+    body = json.dumps(
+        {"resources": {"core": {"reset": {"nested": "object"}, "remaining": 0}}}
+    )
+    _mock_subprocess_ok(mocker, body)
+    assert _fetch_rate_limit_reset() is None
+
+
 # Task 6: retry_gh transient path
 def test_retry_gh_succeeds_after_transient_failures(
     mocker: MockerFixture,
