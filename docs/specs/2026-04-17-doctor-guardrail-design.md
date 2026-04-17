@@ -114,11 +114,16 @@ gh-manage doctor <path-or-repo> [OPTIONS]
 | Findings but all below `--severity` filter | 0 |
 | Findings include critical or high | 1 |
 | Findings but only medium/low | 0 |
-| `--exit-zero` set | always 0 |
+| `--exit-zero` set | always 0 (overrides all other rules — precedes `--severity`) |
 
 ### Profile inference
 
-For path-mode invocations: the CLI reads `.git/config` to get the origin URL, extracts `owner/repo`, looks it up in bundled `repos.yml`, and uses that profile. If not found, `--profile` must be passed explicitly.
+Three modes:
+- **Path mode (`.` or absolute path)**: read `.git/config` at the path, extract origin's `owner/repo`, look up in bundled `repos.yml`. Use that profile.
+- **Remote mode (`owner/repo`)**: look up `owner/repo` directly in bundled `repos.yml`. No git config read.
+- **Explicit `--profile NAME`** overrides inference in both modes.
+
+If inference fails (repo not in `repos.yml` and `--profile` omitted): exit with a clear error listing available profiles from `src/gh_manage/data/profiles/` and the canonical `--profile` flag to use. Never guess silently.
 
 ### Missing-file behaviour
 
@@ -136,8 +141,10 @@ All checks share signature `(ctx: CheckContext) -> list[Finding]` and are regist
 
 Detects cases where a consumer's reusable-pr-gate job produces a status context that branch protection doesn't require.
 
+**Job-matching rule**: a job is considered a "reusable-pr-gate job" iff its `uses:` value matches the regex `yakkuro/gh-manage/\.github/workflows/reusable-pr-gate-(python|typescript)\.yml@.+`. Indirection through another composite / callable workflow is **not** traced. Jobs that invoke local composite actions wrapping the reusable are out of scope — doctor treats them as bespoke and check 2 (`shape/reusable-adoption`) applies instead.
+
 Algorithm:
-1. For each job in `ci.yml` that `uses:` a `reusable-pr-gate-*.yml`:
+1. For each job in `ci.yml` matching the rule above:
 2. Determine produced context: `f"{job.name or job_id} / PR Gate"`
 3. If produced context not in `protection.required_status_checks.contexts`, emit finding.
 4. Remediation text proposes either renaming the job or updating protection.
@@ -177,6 +184,10 @@ def drift_check_shape(ctx: ScanContext) -> list[Finding]:
 
 This follows the existing drift registry pattern. `ScanContext` and `CheckContext` share most fields; the `from_scan_context` constructor does the adapter work (parses `ci.yml` content that `ScanContext` holds as bytes, reads profile, reads protection).
 
+**Error propagation**: if a doctor check raises `DoctorCheckError` (e.g., malformed `ci.yml`), the bridge catches it and converts it to a `Finding(severity=medium, check="shape/check-error", message=str(exc))`. It never re-raises into drift's orchestration loop — one misbehaving repo should not abort the scan of the other 21. Bugs (non-`DoctorCheckError` exceptions) propagate normally and abort the drift scan with a clear traceback.
+
+**Context-adapter regression test**: `tests/unit/drift/test_context_adapter.py` asserts that every field `doctor.CheckContext` consumes is produced by `ScanContext`. If `ScanContext`'s fields drift away, the test fails before the adapter silently breaks.
+
 ### Reporting integration
 
 Drift scanner's existing report modes (`stdout`, `json`, `markdown-file`, `issue`) all work unchanged — shape findings are just additional entries in the `list[Finding]`. No changes to drift's report formatters beyond accepting the new `shape/*` check-name prefix in their severity-bucketing logic.
@@ -185,9 +196,9 @@ Drift scanner's existing report modes (`stdout`, `json`, `markdown-file`, `issue
 
 Each shape check on a single repo adds one `ci.yml` fetch + one `branches/main/protection` fetch. `--all` with 22 repos adds 44 API calls. Since drift scanner already fetches protection for its existing `protection` check, the `ScanContext` caches the protection response so doctor doesn't re-fetch. `ci.yml` is new work: 22 GET requests, ~5 seconds over GitHub's rate limit.
 
-### Cron health
+### Cron health and rate limiting
 
-Out of scope. This spec only adds a check. The cron is 4-days stale as of writing (#47/#50) and that's tracked separately.
+Out of scope. This spec only adds a check. The cron is 4-days stale as of writing (#47/#50) and that's tracked separately. If the scan's new `ci.yml` fetches push the run past GitHub's rate limit, the scanner emits a single `shape/rate-limit-hit` finding (medium severity, one per scan) and continues with partial results rather than aborting. Proper backoff and chunking strategy is tracked in #47.
 
 ## §5 — `init` hardening
 
@@ -221,16 +232,27 @@ if critical:
     raise ClickException(format_findings(critical, header="init aborted"))
 ```
 
-Rollback removes only files that `init` created in this invocation — tracked in a `list[Path]` returned from `copy_profile_files`. Files that predate the init run are untouched.
+**Rollback semantics**:
+- `copy_profile_files` returns `list[tuple[Path, PathState]]` where `PathState` is `CREATED` (file did not exist before) or `OVERWROTE` (file existed; original content saved in a tempdir under `$target/.gh-manage-init-backup-<timestamp>/`).
+- On rollback: `CREATED` paths are `os.unlink`'d; `OVERWROTE` paths are restored from the backup tempdir; the backup tempdir is removed last.
+- Parent directories created during copy are left in place (git ignores empty dirs; cleaning them risks racing with user's concurrent activity).
+- Rollback is best-effort: if a restore fails (disk full, permission, etc.), init raises with both the original doctor-finding and the rollback error, surfacing both so the user knows manual cleanup may be needed.
 
 ### C. Template-source comments
 
 `src/gh_manage/data/templates/ci/python-ci.yml` gets a header comment:
 
 ```yaml
-# REQUIRED: job id must be 'pr-gate' AND 'name: PR Gate' must be present.
-# Branch protection requires the status context 'PR Gate / PR Gate'.
-# Changing either breaks merge-ability. See yakkuro/gh-manage#46.
+# REQUIRED — DO NOT modify the two fields below without also updating branch protection.
+#
+# GitHub Actions generates a status context of the form
+#   "<job.name OR job_id> / <job-step-name-from-reusable-workflow>"
+# The bundled branch-protection policy requires the literal context
+# "PR Gate / PR Gate", so both `pr-gate` as the job id AND `name: "PR Gate"`
+# as the display label must stay as-is.
+#
+# See yakkuro/gh-manage#46 for the incident where this invariant was broken
+# across three repos and caused admin-merges during the v1.1.0 rollout.
 jobs:
   pr-gate:
     name: "PR Gate"
@@ -274,7 +296,10 @@ Same comment will apply to any future `typescript-ci.yml` template when ts-servi
 | 6 | Init hardening | `gh-manage init /tmp/test-repo --profile python-service && gh-manage doctor /tmp/test-repo` | 0 critical / 0 high |
 | 7 | Template validity | `uv run pytest tests/unit/data/test_template_shapes.py -v` | Pass |
 | 8 | Broken-consumer regression | `uv run pytest tests/unit/doctor/test_broken_consumer_fixtures.py -v` | Pass |
-| 9 | Four-reviewer PR | Codex + superpowers:code-reviewer + silent-failure-hunter + code-reviewer | 0 CRITICAL / 0 HIGH |
+
+### PR review process (outside implementation scope)
+
+- Four-reviewer protocol (Codex + superpowers:code-reviewer + silent-failure-hunter + code-reviewer) required before merge, per `claude-dotfiles/rules/workflow-review.md`. This is a PR-gate concern, not an implementation acceptance criterion — it lives here as a reminder, not a test that the implementer writes.
 
 ### Release version
 
