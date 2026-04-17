@@ -197,3 +197,31 @@ def apply(
         + (f" + {n_label_changes} label changes" if also_labels else "")
         + "."
     )
+
+    # Post-apply doctor warnings (spec §5 enforcement scope).
+    # apply NEVER blocks; critical/high go to stderr for visibility.
+    from gh_manage import doctor as _doctor
+    from gh_manage.doctor import report as _doctor_report
+
+    try:
+        findings = _doctor.run_on_path(target, profile_name=profile_name)
+    except Exception as exc:
+        # If doctor itself errors, don't fail apply — surface the issue.
+        click.echo(f"WARNING: post-apply doctor failed: {exc}", err=True)
+        findings = ()
+
+    blocking = tuple(f for f in findings if f.severity in ("critical", "high"))
+    if blocking:
+        click.echo("", err=True)
+        click.echo(
+            "WARNING: post-apply doctor surfaced blocking-severity findings:",
+            err=True,
+        )
+        click.echo(
+            _doctor_report.format_stdout(blocking, repo=owner_repo),
+            err=True,
+        )
+        click.echo(
+            "Not failing apply — run `gh-manage doctor` to review.",
+            err=True,
+        )
