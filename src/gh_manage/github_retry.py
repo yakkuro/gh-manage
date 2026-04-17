@@ -149,6 +149,13 @@ def retry_gh(
             rate_limit_retried = True
             reset_at = _fetch_rate_limit_reset()
             if reset_at is None:
+                if rate_limit_wait_max <= 0:
+                    # Wait explicitly disabled — propagate fresh without reset info.
+                    raise GhRateLimitError(
+                        str(e),
+                        status_code=e.status_code,
+                        reset_at=None,
+                    ) from e
                 # Probe failure fallback.
                 print(
                     f"[rate-limit-probe-failed] endpoint={endpoint} fallback_wait=15s",

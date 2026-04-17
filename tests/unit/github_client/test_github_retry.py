@@ -348,3 +348,31 @@ def test_retry_gh_rate_limit_wait_max_zero_disables_wait(
         retry_gh(fn, endpoint="api repos/foo")
     assert exc_info.value.reset_at == reset_at
     assert exc_info.value.__cause__ is original
+
+
+def test_retry_gh_rate_limit_wait_max_zero_disables_wait_on_probe_failure(
+    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GH_MANAGE_RATE_LIMIT_WAIT_MAX=0 must also disable the 15s probe-failure
+    fallback — otherwise operators setting wait-disabled still see a 15s stall.
+    """
+    from gh_manage.github_client import GhRateLimitError
+    from gh_manage.github_retry import retry_gh
+
+    monkeypatch.setenv("GH_MANAGE_RATE_LIMIT_WAIT_MAX", "0")
+    sleep_mock = mocker.patch("time.sleep", return_value=None)
+    mocker.patch("gh_manage.github_retry._fetch_rate_limit_reset", return_value=None)
+
+    original = GhRateLimitError("throttled", status_code=429)
+
+    def fn() -> str:
+        raise original
+
+    with pytest.raises(GhRateLimitError) as exc_info:
+        retry_gh(fn, endpoint="api repos/foo")
+    # Fresh exception, chained, reset_at is None (probe failed AND wait disabled)
+    assert exc_info.value is not original
+    assert exc_info.value.reset_at is None
+    assert exc_info.value.__cause__ is original
+    # No 15s sleep should have occurred
+    assert 15.0 not in sleep_mock.call_args_list
