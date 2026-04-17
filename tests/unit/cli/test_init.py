@@ -379,3 +379,179 @@ def test_init_stops_on_protection_downgrade(
     mock_files_apply.assert_not_called()
     mock_labels_apply.assert_not_called()
     mock_protection_apply.assert_not_called()
+
+
+# Task 10: Doctor guardrail (spec §5.B)
+
+
+def test_init_calls_doctor_after_apply_when_no_critical_findings(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """After apply succeeds, init must invoke doctor on the target path.
+    If doctor returns no critical findings, init exits 0."""
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection_default(mocker)
+    mocker.patch(
+        "gh_manage.commands.init.profile_sync.apply_files_diff",
+        return_value=[],
+    )
+    mock_labels_apply = mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
+    mock_doctor = mocker.patch(
+        "gh_manage.commands.init.doctor_pkg.run_on_path",
+        return_value=(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        prog_name="gh-manage",
+    )
+
+    assert result.exit_code == 0, result.output
+    mock_labels_apply.assert_called_once()
+    mock_doctor.assert_called_once()
+    # Verify doctor was called with the target path
+    call_args = mock_doctor.call_args
+    assert call_args[0][0] == tmp_path.resolve()
+
+
+def test_init_rolls_back_created_files_on_doctor_critical(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """Critical doctor findings trigger rollback: unlink created files
+    and raise ClickException."""
+    from gh_manage.findings import Finding
+
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection_default(mocker)
+
+    # Simulate apply_files_diff returning a created file path
+    ci_path = tmp_path / ".github" / "workflows" / "ci.yml"
+    ci_path.parent.mkdir(parents=True, exist_ok=True)
+    ci_path.write_text("stub ci.yml")
+
+    mocker.patch(
+        "gh_manage.commands.init.profile_sync.apply_files_diff",
+        return_value=[ci_path],
+    )
+    mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
+
+    # Simulate doctor finding a critical issue
+    fake_critical = (
+        Finding(
+            severity="critical",
+            check="shape/job-shape-coherence",
+            repo="yakkuro/example",
+            field_path="jobs.lint.runs-on",
+            current_value="ubuntu-latest",
+            desired_value="ubuntu-22.04",
+            message="Job shape does not match profile",
+        ),
+    )
+
+    mock_doctor = mocker.patch(
+        "gh_manage.commands.init.doctor_pkg.run_on_path",
+        return_value=fake_critical,
+    )
+    mock_report = mocker.patch(
+        "gh_manage.commands.init.doctor_report.format_stdout",
+        return_value="Critical finding detected",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        prog_name="gh-manage",
+    )
+
+    assert result.exit_code != 0
+    assert not ci_path.exists(), "rollback should have removed ci.yml"
+    mock_doctor.assert_called_once()
+    mock_report.assert_called_once()
+
+
+def test_init_does_not_call_doctor_on_dry_run(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """Doctor should only be called during --apply, not during dry-run."""
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection_default(mocker)
+    mock_doctor = mocker.patch("gh_manage.commands.init.doctor_pkg.run_on_path")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service"],
+        prog_name="gh-manage",
+    )
+
+    assert result.exit_code == 0, result.output
+    mock_doctor.assert_not_called()
+
+
+def test_init_rollback_continues_on_unlink_failure(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """Rollback should continue even if unlink fails on a file."""
+    from gh_manage.findings import Finding
+
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection_default(mocker)
+
+    ci_path = tmp_path / ".github" / "workflows" / "ci.yml"
+    ci_path.parent.mkdir(parents=True, exist_ok=True)
+    ci_path.write_text("stub ci.yml")
+
+    mocker.patch(
+        "gh_manage.commands.init.profile_sync.apply_files_diff",
+        return_value=[ci_path],
+    )
+    mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
+
+    fake_critical = (
+        Finding(
+            severity="critical",
+            check="test",
+            repo="yakkuro/example",
+            field_path="x",
+            current_value="a",
+            desired_value="b",
+            message="test finding",
+        ),
+    )
+
+    mocker.patch(
+        "gh_manage.commands.init.doctor_pkg.run_on_path",
+        return_value=fake_critical,
+    )
+    mocker.patch(
+        "gh_manage.commands.init.doctor_report.format_stdout",
+        return_value="Critical",
+    )
+
+    # Mock unlink to raise OSError
+    original_unlink = Path.unlink
+
+    def failing_unlink(self: Path, **kwargs: dict) -> None:
+        if "ci.yml" in str(self):
+            raise OSError("Permission denied")
+        return original_unlink(self, **kwargs)
+
+    mocker.patch.object(Path, "unlink", failing_unlink)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        prog_name="gh-manage",
+    )
+
+    assert result.exit_code != 0
+    # Should still get the critical finding error, with a warning about rollback failure
+    assert "rollback" in result.output.lower() or "warning" in result.output.lower()

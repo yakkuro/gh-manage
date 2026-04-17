@@ -47,36 +47,16 @@ from datetime import datetime, timedelta
 from importlib.resources import files as _package_files
 from itertools import chain
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
 
 
-# ========== Data Model ==========
+# ========== Data Model (moved to findings.py in cli/v1.2.0) ==========
 
-
-Severity = Literal["critical", "high", "medium", "low"]
-
-
-@dataclass(frozen=True)
-class Finding:
-    """One drift finding. Frozen, comparable, hashable.
-
-    Phase 8 uses per-item granularity: 10 missing labels produce 10
-    findings. Group rendering (if ever needed) happens at the report
-    layer; the Finding itself is atomic.
-    """
-
-    severity: Severity
-    check: str  # "labels" | "protection" | "profile_files"
-    repo: str  # "owner/repo"
-    field_path: str  # e.g. "labels[priority/critical]", "enforce_admins", "CLAUDE.md"
-    current_value: Any  # current value on the repo (None if missing)
-    desired_value: Any  # desired value per profile/policy (None if extraneous)
-    message: str  # human-readable 1-line explanation
-    remediation: str | None = None  # optional fix command
+from gh_manage.findings import Finding, Severity  # noqa: F401
 
 
 @dataclass(frozen=True)
@@ -92,6 +72,9 @@ class ScanContext:
     - labels_config: the loaded bundled labels.yml.
     - bp_config: the loaded bundled branch-protection.yml, or None if
       profile.protection_policy is None (opt-out).
+    - live_required_contexts: tuple of status-check contexts required by
+      the repo's branch-protection policy, resolved from the remote repo.
+      Defaults to empty to avoid breaking existing call sites.
     """
 
     path: Path
@@ -100,6 +83,7 @@ class ScanContext:
     profile: ProfileSpec
     labels_config: LabelsConfig
     bp_config: BranchProtectionConfig | None
+    live_required_contexts: tuple[str, ...] = ()
 
 
 # ========== Error Hierarchy ==========
@@ -793,3 +777,8 @@ def resolve_drift_issue(
             return f"Closed issue #{issue_number} on {repo} (zero drift, 24h rule satisfied)"
 
     return f"Updated issue #{issue_number} on {repo} ({len(findings)} findings)"
+
+
+# Side-effect import: doctor.bridge.check_shape registers with drift's
+# registry on module load. Spec §4.
+from gh_manage.doctor import bridge as _doctor_bridge  # noqa: F401, E402

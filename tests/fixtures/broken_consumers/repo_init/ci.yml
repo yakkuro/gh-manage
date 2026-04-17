@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  call-pr-gate:
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.1.0
+    with:
+      python-version: "3.12"
+      gh-manage-ref: v1.1.0
+      install-command: "uv sync"
+      test-command: "uv run pytest"
+      lint: true
+      type-check: false

@@ -7,6 +7,7 @@ import click
 from gh_manage import __version__
 from gh_manage.commands import (
     apply as apply_cmd,
+    doctor as doctor_cmd,
     drift as drift_cmd,
     init as init_cmd,
     issues as issues_cmd,
@@ -29,6 +30,7 @@ def main() -> None:
 
 main.add_command(init_cmd.init)
 main.add_command(apply_cmd.apply)
+main.add_command(doctor_cmd.doctor_cmd)
 main.add_command(labels_cmd.labels)
 main.add_command(protection_cmd.protection)
 main.add_command(drift_cmd.drift)

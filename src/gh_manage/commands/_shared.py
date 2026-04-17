@@ -20,6 +20,7 @@ from typing import Any, TypeVar
 import click
 
 from gh_manage.config import ConfigError, ConfigFileNotFoundError
+from gh_manage.doctor.errors import DoctorError
 from gh_manage.drift_sync import DriftError
 from gh_manage.git_cli import GitError
 from gh_manage.github_client import GhError
@@ -37,6 +38,7 @@ _DOMAIN_ERRORS = (
     ProfileError,
     ProtectionError,
     DriftError,
+    DoctorError,
 )
 
 

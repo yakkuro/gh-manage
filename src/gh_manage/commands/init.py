@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from gh_manage import doctor as doctor_pkg
 from gh_manage import git_cli, labels_sync, profile_sync, protection_sync
 from gh_manage.commands._shared import (
     format_files_diff,
@@ -17,6 +18,7 @@ from gh_manage.commands._shared import (
     resolve_templates_root,
 )
 from gh_manage.config import load_config
+from gh_manage.doctor import report as doctor_report
 from gh_manage.github_api import labels as labels_api
 from gh_manage.github_api import protection as protection_api
 from gh_manage.github_client import GhNotFoundError
@@ -174,7 +176,7 @@ def init(
 
     # Apply
     click.echo("")
-    profile_sync.apply_files_diff(
+    created_paths: list[Path] = profile_sync.apply_files_diff(
         files_diff, target, templates_root, force=force, progress=click.echo
     )
     labels_sync.apply_diff(labels_diff, owner_repo, progress=click.echo)
@@ -188,6 +190,44 @@ def init(
             downgrade_allowed=False,
             backup_dir=backup_dir,
             progress=click.echo,
+        )
+
+    # Post-apply doctor gate (spec §5.B).
+    # Critical findings trigger rollback: remove files init created
+    # (best-effort unlink), surface the doctor findings.
+    findings = doctor_pkg.run_on_path(target, profile_name=profile_name)
+    critical = tuple(f for f in findings if f.severity == "critical")
+    if critical:
+        click.echo("", err=True)
+        click.echo("init post-check found critical findings:", err=True)
+        click.echo(
+            doctor_report.format_stdout(critical, repo=owner_repo),
+            err=True,
+        )
+        failed_deletes: list[tuple[Path, OSError]] = []
+        for p in reversed(created_paths):
+            try:
+                if p.is_file():
+                    p.unlink()
+            except OSError as roll_err:
+                failed_deletes.append((p, roll_err))
+        if failed_deletes:
+            click.echo("", err=True)
+            click.echo(
+                "WARNING: rollback incomplete — manual cleanup required:",
+                err=True,
+            )
+            for p, err in failed_deletes:
+                click.echo(f"  cannot delete {p}: {err}", err=True)
+            raise click.ClickException(
+                "init aborted due to critical doctor findings; rollback "
+                "left orphan files. Run `git status` and remove the "
+                "listed files manually, then re-run init. "
+                "See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
+            )
+        raise click.ClickException(
+            "init aborted due to critical doctor findings; rolled back "
+            "files. See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
         )
 
     click.echo("\nDone. Next steps:")
