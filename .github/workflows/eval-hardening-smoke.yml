@@ -93,7 +93,22 @@ jobs:
           # ${{ github.job }} is the job_id string, not the numeric
           # job ID that --job expects. The marker string is unique
           # enough that whole-run grep is sound.
-          gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>&1 || true
+          if ! gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>/tmp/inject.err; then
+            echo "::error::gh run view failed — cannot verify injection property"
+            cat /tmp/inject.err
+            exit 1
+          fi
+          if [[ ! -s /tmp/inject.log ]]; then
+            echo "::error::gh run view returned empty log — cannot verify injection property"
+            exit 1
+          fi
+          # Confirm logs actually include the inject step's output. If
+          # the TEST_CMD echo is absent, logs are truncated and grep -q
+          # on the marker would be a vacuous check.
+          if ! grep -q 'Running test-command:' /tmp/inject.log; then
+            echo "::error::inject-step logs missing — assertion would be vacuous"
+            exit 1
+          fi
           if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
             echo "::error::injection marker leaked — eval hardening regressed"
             exit 1
@@ -178,8 +193,21 @@ jobs:
         run: |
           set -euo pipefail
           # See comment in python-f2-injection assert step for why we
-          # do not filter --job.
-          gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>&1 || true
+          # do not filter --job and why we check log non-emptiness
+          # and presence of the inject step's echo line.
+          if ! gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>/tmp/inject.err; then
+            echo "::error::gh run view failed — cannot verify injection property"
+            cat /tmp/inject.err
+            exit 1
+          fi
+          if [[ ! -s /tmp/inject.log ]]; then
+            echo "::error::gh run view returned empty log — cannot verify injection property"
+            exit 1
+          fi
+          if ! grep -q 'Running test-command:' /tmp/inject.log; then
+            echo "::error::inject-step logs missing — assertion would be vacuous"
+            exit 1
+          fi
           if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
             echo "::error::injection marker leaked — eval hardening regressed (typescript)"
             exit 1
