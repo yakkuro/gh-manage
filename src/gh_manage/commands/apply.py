@@ -199,16 +199,23 @@ def apply(
     )
 
     # Post-apply doctor warnings (spec §5 enforcement scope).
-    # apply NEVER blocks; critical/high go to stderr for visibility.
+    # apply NEVER blocks on doctor FINDINGS; critical/high go to stderr
+    # for visibility. But apply DOES propagate doctor *setup* errors
+    # (missing profile, bad repos.yml, unreachable protection API) —
+    # those are user-actionable and should surface via handle_errors,
+    # not be silently swallowed as a warning.
     from gh_manage import doctor as _doctor
     from gh_manage.doctor import report as _doctor_report
+    from gh_manage.doctor.errors import DoctorCheckError
 
     try:
         findings = _doctor.run_on_path(target, profile_name=profile_name)
-    except Exception as exc:
-        # If doctor itself errors, don't fail apply — surface the issue.
-        click.echo(f"WARNING: post-apply doctor failed: {exc}", err=True)
+    except DoctorCheckError as exc:
+        # Per-check failure (malformed ci.yml etc.) is a warning only.
+        click.echo(f"WARNING: post-apply doctor check failed: {exc}", err=True)
         findings = ()
+    # DoctorError / GhError / GitError / ConfigError propagate to
+    # handle_errors and surface as ClickException — intentional.
 
     blocking = tuple(f for f in findings if f.severity in ("critical", "high"))
     if blocking:

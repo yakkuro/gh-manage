@@ -204,15 +204,27 @@ def init(
             doctor_report.format_stdout(critical, repo=owner_repo),
             err=True,
         )
+        failed_deletes: list[tuple[Path, OSError]] = []
         for p in reversed(created_paths):
             try:
                 if p.is_file():
                     p.unlink()
             except OSError as roll_err:
-                click.echo(
-                    f"WARNING: rollback failed for {p}: {roll_err}",
-                    err=True,
-                )
+                failed_deletes.append((p, roll_err))
+        if failed_deletes:
+            click.echo("", err=True)
+            click.echo(
+                "WARNING: rollback incomplete — manual cleanup required:",
+                err=True,
+            )
+            for p, err in failed_deletes:
+                click.echo(f"  cannot delete {p}: {err}", err=True)
+            raise click.ClickException(
+                "init aborted due to critical doctor findings; rollback "
+                "left orphan files. Run `git status` and remove the "
+                "listed files manually, then re-run init. "
+                "See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
+            )
         raise click.ClickException(
             "init aborted due to critical doctor findings; rolled back "
             "files. See docs/specs/2026-04-17-doctor-guardrail-design.md §5."

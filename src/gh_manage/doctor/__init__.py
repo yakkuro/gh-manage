@@ -64,15 +64,37 @@ def _read_local_ci_yml(path: Path) -> str:
 
 
 def _fetch_remote_ci_yml(repo: str) -> str:
-    """Return ci.yml contents for owner/repo, or '' if the file is absent."""
+    """Return ci.yml contents for owner/repo, or '' if the file is absent.
+
+    Non-absent failures (invalid YAML response, malformed base64, bad
+    UTF-8) are wrapped in DoctorError with context so callers see an
+    actionable message instead of a raw traceback. GhError other than
+    404 propagates — it's usually auth or rate limit, and the caller
+    should know.
+    """
+    import binascii
+
     try:
         raw = run_gh_api(["repos", repo, "contents", ".github/workflows/ci.yml"])
     except GhNotFoundError:
         return ""
-    payload = yaml.safe_load(raw)
+
+    try:
+        payload = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise DoctorError(
+            f"GitHub returned a non-YAML body for {repo}/ci.yml: {exc}"
+        ) from exc
+
     if not isinstance(payload, dict) or "content" not in payload:
         return ""
-    return base64.b64decode(payload["content"]).decode("utf-8")
+
+    try:
+        return base64.b64decode(payload["content"]).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise DoctorError(
+            f"Failed to decode ci.yml content from {repo}: {exc}"
+        ) from exc
 
 
 def _resolve_profile_required_contexts(profile: ProfileSpec) -> tuple[str, ...]:
