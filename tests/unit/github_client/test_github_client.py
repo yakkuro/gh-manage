@@ -28,6 +28,22 @@ from gh_manage.github_client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fast_retries(mocker: MockerFixture) -> None:
+    """Skip retry delays in classifier tests.
+
+    After Task 8 wrapped run_gh with retry_gh, rate-limit and transient
+    errors trigger retry with real time.sleep (15s for rate-limit probe
+    fallback, 1+2+4s for transient backoff). Classifier tests are not
+    verifying retry behavior (that's test_github_retry.py + dedicated
+    Task 8 integration tests); they only verify that a given stderr
+    raises the correct exception type with correct status_code. Mocking
+    time.sleep + the probe keeps classifier tests fast (<0.1s each).
+    """
+    mocker.patch("time.sleep", return_value=None)
+    mocker.patch("gh_manage.github_retry._fetch_rate_limit_reset", return_value=None)
+
+
 def _mock_gh_success(mocker: MockerFixture, stdout: str):
     return mocker.patch(
         "subprocess.run",
