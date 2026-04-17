@@ -57,18 +57,33 @@ Related issues: [#47](https://github.com/yakkuro/gh-manage/issues/47) (Theme A u
 
 ```python
 class GhError(Exception):
-    """Base class. status_code is set when classification came from HTTP."""
-    status_code: int | None = None  # class-level default
+    """Base class. status_code is set on construction when HTTP-classified."""
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 class GhAuthError(GhError): ...          # status_code = 401
 class GhPermissionError(GhError): ...    # status_code = 403 (non-rate-limit)
 class GhNotFoundError(GhError): ...      # status_code = 404
-class GhRateLimitError(GhError):         # status_code = 429 or 403 (rate-limit body)
-    reset_at: datetime | None = None     # populated by retry layer when known
+
+class GhRateLimitError(GhError):
+    """429 or 403 rate-limit. reset_at immutable, set at construction."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        reset_at: datetime | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code)
+        self.reset_at = reset_at
+
 class GhAPIError(GhError): ...           # status_code set when parseable, else None
-class GhTransientError(GhAPIError):      # 5xx + network — new subclass for retry layer
-    status_code: int | None              # 500/502/503/504/None (network)
+class GhTransientError(GhAPIError):      # 5xx + network — retry-eligible subclass
+    ...                                  # status_code = 500/502/503/504 or None
 ```
+
+Immutability contract: `reset_at` is set once at construction and never mutated. The classifier raises `GhRateLimitError(msg)` with `reset_at=None`. The retry layer (§Retry Layer) does NOT mutate the original exception — when it learns the reset timestamp via `_fetch_rate_limit_reset()`, it either sleeps-and-retries the call, or if the wait would exceed `rate_limit_wait_max`, re-raises a fresh `GhRateLimitError(original_msg, status_code=original.status_code, reset_at=fetched_ts) from original`. Callers that see a `GhRateLimitError` propagating past the retry layer can rely on `reset_at` being either None (probe failed) or an accurate immutable timestamp.
 
 Rationale for `GhTransientError` vs flags on `GhAPIError`:
 - Retry layer needs a sharp, cheap predicate: `isinstance(e, (GhTransientError, GhRateLimitError))`.
@@ -77,22 +92,30 @@ Rationale for `GhTransientError` vs flags on `GhAPIError`:
 
 ### Classifier (`_raise_classified_error`)
 
-Algorithm:
+The classifier distinguishes two distinct scenarios, not a primary path with a fallback. The presence or absence of an HTTP status code in stderr selects the path:
 
-1. Extract HTTP status code via regex `r"\(HTTP (\d{3})\)"` or `r"HTTP (\d{3})"` on stderr. `gh` CLI consistently emits `(HTTP <code>)` in its error output — verified against `gh api` docs.
-2. If status code parsed, dispatch by code:
+**Path A: HTTP response received** (GitHub returned a response, `gh` surfaced the status).
+
+1. Extract HTTP status code via regex `r"\(HTTP (\d{3})\)"` on stderr. `gh` CLI consistently emits `(HTTP <code>)` in its error output — documented in `gh api` source. If the regex matches, take Path A.
+2. Dispatch by code:
    - `401` → `GhAuthError`
-   - `403` → inspect body for rate-limit markers (`"API rate limit"`, `"secondary rate limit"`, `"abuse detection"`); if matched, `GhRateLimitError`, else `GhPermissionError`
+   - `403` → inspect stderr for rate-limit markers (`"API rate limit"`, `"secondary rate limit"`, `"abuse detection"`); if matched, `GhRateLimitError`, else `GhPermissionError`
    - `404` → `GhNotFoundError`
    - `429` → `GhRateLimitError`
    - `500`/`502`/`503`/`504` → `GhTransientError`
-   - Other → `GhAPIError`
-3. If no status code parsed (e.g., `gh` CLI connectivity issue, DNS failure):
-   - Check stderr for network markers (`"dial tcp"`, `"no such host"`, `"connection refused"`, `"timeout"`); if matched, `GhTransientError` with `status_code=None`.
-   - Else `GhAPIError`.
-4. Populate `status_code` on the raised exception.
+   - Other (4xx/5xx not listed) → `GhAPIError` with `status_code` populated
 
-Fallback to current substring matching is removed — the HTTP status regex is load-bearing. If the regex fails for a known case, we add the case to the regex or add a targeted marker check, not keep a dual path.
+**Path B: No HTTP response** (network-level failure, no status in stderr).
+
+1. Only reached when Path A's regex does NOT match.
+2. Check stderr against a table of network markers (case-insensitive substring match, priority order):
+   - `"dial tcp"` → `GhTransientError` (status_code=None)
+   - `"no such host"` → `GhTransientError` (status_code=None)
+   - `"connection refused"` → `GhTransientError` (status_code=None)
+   - `"i/o timeout"` or `"context deadline exceeded"` → `GhTransientError` (status_code=None)
+   - None matched → `GhAPIError` (status_code=None)
+
+Design invariant: Path A and Path B are mutually exclusive and exhaustive; every stderr lands in exactly one. If a future `gh` CLI version changes the HTTP error format such that `(HTTP <code>)` no longer appears, Path A regression breaks all HTTP error classification — this is a sharp failure mode by design. A dual-path with substring fallback would silently re-classify 500s as `GhAPIError` and lose retry eligibility, which is worse than a loud test failure. The classifier test suite includes a canary test asserting `(HTTP 500)` is still parseable from a representative `gh` stderr fixture.
 
 ### Retry Layer
 
@@ -109,15 +132,24 @@ def retry_gh(
     """Wrap a callable that may raise GhTransientError or GhRateLimitError.
 
     Policy:
-    - GhTransientError: exponential backoff 1s → 2s → 4s with 0-50% jitter.
-    - GhRateLimitError: poll `gh api rate_limit` for reset time; if reset
-      is within `rate_limit_wait_max` seconds, sleep then retry once;
-      else re-raise.
+    - GhTransientError: exponential backoff 1s → 2s → 4s with 0-50%
+      multiplicative jitter (sleep in [base, base*1.5)).
+    - GhRateLimitError: poll `gh api rate_limit` for reset time via
+      `_fetch_rate_limit_reset()`. If reset is within
+      `rate_limit_wait_max` seconds, sleep for
+      `(reset_at - now) + uniform(0, min(10, wait*0.3))` then retry
+      ONCE; else re-raise a fresh GhRateLimitError with reset_at
+      populated. The extra uniform term is anti-thundering-herd jitter
+      so parallel workers wake at staggered times.
     - After max_attempts transient retries, re-raise the last exception.
     - Log every attempt to stderr:
-        [retry 1/3] GET /repos/foo (GhTransientError status=503) wait=1.2s
+        [retry 1/3] api repos/foo (GhTransientError status=503) wait=1.24s
+        [retry 2/3] api repos/foo (GhRateLimitError status=429) wait=47.3s (reset=2026-04-17T10:45:00Z)
+        [rate-limit-probe-failed] endpoint=repos/foo fallback_wait=15s reason=<probe_error>
     """
 ```
+
+**Thundering-herd mitigation**: Under parallel `--all` scan with `--concurrency=N`, all N workers share the same GitHub auth and hit the same rate-limit counter. When the primary quota is exhausted, all workers will see 429 within seconds of each other. Without jitter, they would all sleep for identical durations and retry simultaneously. With the `uniform(0, min(10, wait*0.3))` jitter on the rate-limit wait, workers wake over a window of up to 10 seconds, spreading the retry storm. This matters most for **secondary rate-limit** (short-term abuse detection, typical reset <60s) where the counter is still near-zero when workers wake — the jitter lets the first worker succeed and subsequent ones staggered. For **primary rate-limit** (hourly bucket), the reset is atomic so thundering-herd is harmless — the counter fully refills. The spec optimizes for the worse case (secondary).
 
 Config (env vars, read at retry time, not startup):
 - `GH_MANAGE_MAX_RETRIES` (default `3`, min `1`, max `10`)
@@ -171,8 +203,20 @@ gh-manage drift --all [--concurrency N] [other flags]
 
 ### Output Behavior
 
-- **Per-repo results** (`click.echo(result_str)` — stdout for stdout/json/markdown-file modes): streamed as workers complete. Users get feedback that something is happening.
-- **Scan summary** (stderr): collected into a dict keyed by repo name, printed in repos.yml order after all workers finish. Deterministic for diffing across runs.
+Threading discipline: **only the main thread writes to stdout/stderr**. Workers return their per-repo output as a value from the future; the main thread iterates `as_completed` and emits output serially. This avoids any need for print locks, guarantees line-atomic output, and keeps progress counters single-threaded.
+
+- **Per-repo results** (stdout for stdout/json/markdown-file modes): main-thread emission inside the `as_completed` loop, in completion order. Each worker returns `(repo_name, status, result_str_or_exc)`.
+- **Progress indicator** (stderr, only when `--concurrency > 1`): main-thread increments a local counter as futures complete. Example:
+
+  ```
+  [drift --all] 9 repos, concurrency=4
+  [drift --all] 3/9 scanned
+  [drift --all] 7/9 scanned
+  [drift --all] 9/9 scanned in 23.7s
+  ```
+
+  Progress lines emit on each completion; at `N>20` the implementation may batch (emit every Nth completion) to avoid log spam.
+- **Scan summary** (stderr): collected into a dict keyed by repo name, printed in repos.yml order after all workers finish. Deterministic output for diffing across runs.
 - **Issue mode** (`--report-mode issue`): unchanged semantics — each finding posts its own Issue; concurrency just parallelizes the posting.
 
 ### Error Handling
@@ -189,26 +233,38 @@ Each worker's exception (GhError, ConfigError, GitError, etc.) is caught inside 
 ### PR 1 Tests
 
 - **Classifier** (`tests/unit/test_github_client.py`):
-  - Table-driven tests: for each HTTP code (401/403-perm/403-rate/404/429/500/502/503/504/418), assert correct exception subclass and `status_code`.
-  - Network marker tests: stderr like `"dial tcp ... i/o timeout"` → `GhTransientError` with `status_code=None`.
-  - Unparseable stderr → `GhAPIError` with `status_code=None` (regression guard).
+  - Table-driven HTTP tests: for each status code (401/403-perm/403-rate/404/429/500/502/503/504/418/599), assert correct exception subclass and `status_code`. Include a canary fixture from real `gh api` stderr output asserting `(HTTP 500)` is parseable (breaks loudly if `gh` CLI changes format).
+  - Table-driven network-marker tests (case-insensitive substring match):
+    - `"error: dial tcp ...: connection refused"` → `GhTransientError` (status_code=None)
+    - `"error: no such host: api.github.com"` → `GhTransientError` (status_code=None)
+    - `"error: connection refused"` → `GhTransientError` (status_code=None)
+    - `"error: request i/o timeout"` → `GhTransientError` (status_code=None)
+    - `"error: context deadline exceeded"` → `GhTransientError` (status_code=None)
+    - `"error: unknown network thing"` → `GhAPIError` (status_code=None, regression guard)
+  - Path-A vs Path-B mutual exclusivity: stderr with BOTH `(HTTP 500)` and `"dial tcp"` → Path A wins (GhTransientError with status_code=500).
+  - `status_code` attribute present on all classified exceptions (assert via `hasattr` + value).
 - **Retry** (`tests/unit/test_github_retry.py`):
   - Mock `subprocess.run` returning 503 three times, then 200 → assert retry + final success, 3 backoff logs on stderr.
   - Mock 503 × (max_attempts + 1) → assert raises `GhTransientError`.
-  - Mock 429 + rate-limit reset within 60s → assert one wait + retry.
-  - Mock 429 + rate-limit reset beyond 60s → assert raises `GhRateLimitError` without extra retry.
-  - Mock rate-limit probe itself failing → fallback to 15s sleep (under test, monkey-patch `time.sleep` to record argument).
-  - env var overrides: `GH_MANAGE_MAX_RETRIES=1` → single retry path.
-  - Non-retriable errors (401/403-perm/404) pass through on first attempt.
+  - Mock 429 + rate-limit reset within 60s → assert one wait + retry; monkey-patched `time.sleep` receives a value in `[wait_duration, wait_duration + 10)` (jitter range).
+  - Mock 429 + rate-limit reset beyond 60s → assert raises a FRESH `GhRateLimitError` (not the original object), with `reset_at` populated, chained via `__cause__` to the original.
+  - Mock rate-limit probe failures — three scenarios, all must log `[rate-limit-probe-failed]` to stderr:
+    - Probe raises network error → fallback to 15s sleep → retry call succeeds.
+    - Probe raises GhAuthError → fallback to 15s sleep → retry call fails with original GhRateLimitError (probe failure does not mask).
+    - Probe subprocess times out (simulated via `subprocess.TimeoutExpired`) → fallback to 15s sleep → retry succeeds.
+  - env var overrides: `GH_MANAGE_MAX_RETRIES=1` → single retry path; `GH_MANAGE_RATE_LIMIT_WAIT_MAX=0` → rate-limit never waits, always re-raises.
+  - Non-retriable errors (401/403-perm/404) pass through on first attempt with zero retry log lines.
+  - Probe itself does NOT recurse through `retry_gh` (regression: mock subprocess counts invocations, probe path records exactly 1 call).
 
 ### PR 2 Tests
 
 - **Parallel execution** (`tests/unit/test_commands_drift.py`):
-  - 3 mock repos, `_scan_single_repo` patched to return deterministic strings — assert stdout stream contains all 3, summary in repo order.
+  - 3 mock repos, `_scan_single_repo` patched to return deterministic strings — assert stdout stream contains all 3, summary in repos.yml order.
   - One repo raises GhError — assert FAILED in summary, other two succeed.
-  - `--concurrency 1` path — assert sequential-equivalent behavior.
-  - `--concurrency 0` / `--concurrency 17` — assert click error message.
-  - `_scan_single_repo` takes a simulated wall-clock time — parallel total wall-clock < sequential total (smoke test for concurrency).
+  - `--concurrency 1` path — summary lines (excluding timing) byte-identical to sequential pre-PR-2 snapshot fixture.
+  - `--concurrency 0` / `--concurrency 17` → click BadParameter error.
+  - **Timed concurrency smoke**: 4 mock repos, each `_scan_single_repo` sleeps 1.0s; with `--concurrency=4` the total wall-clock is < 1.8s (expect ~1.0s + overhead); with `--concurrency=1` wall-clock is > 3.5s. This guards against GIL-bound regressions — if workers don't actually run in parallel (e.g., refactor moves subprocess blocking into Python computation), this test flips.
+  - Output ordering: no interleaved lines within a single repo's output (atomicity guaranteed by main-thread-only emission).
 
 ### Integration / Regression
 
@@ -232,16 +288,9 @@ Retry log format (stderr, text):
 - `wait=` is the time the retry layer slept before the next attempt.
 - No structured logging in this spec (deferred to Theme A item 6).
 
-Parallel progress hint (PR 2, stderr when `--concurrency > 1`):
+Parallel progress hint emission is defined in §2 Output Behavior (main-thread only). Progress lines use plain newlines (no `\r`) for CI log readability.
 
-```
-[drift --all] 9 repos, concurrency=4
-[drift --all] 3/9 scanned
-[drift --all] 7/9 scanned
-[drift --all] 9/9 scanned in 23.7s
-```
-
-Progress lines use `\r` or plain newlines — plain newlines chosen for CI log readability.
+Future structured logging (post-v1.4.0, Theme A item 6) will emit JSON to stderr with `{"level": "retry", "attempt": 1, "max_attempts": 3, "endpoint": "...", "error": "...", "wait_sec": 1.24}`. The current text format is intentionally human-friendly for CI debugging.
 
 ## §5 — Release Plan
 
@@ -252,16 +301,24 @@ Progress lines use `\r` or plain newlines — plain newlines chosen for CI log r
 - **PR 2** (`feat: parallel --all drift scan with --concurrency`)
   - Branch: `feat/resilience-pr2-parallel-scan`
   - Tag: `cli/v1.4.0`
-  - Release notes: "`gh-manage drift --all` now scans repos in parallel (default 4 workers; `--concurrency N` to tune)."
+  - Release notes: "`gh-manage drift --all` now scans repos in parallel (default 4 workers; `--concurrency N` to tune). `--concurrency 8+` may interact with GitHub secondary rate-limit — use at your own risk."
 - Both PRs follow `docs/release-checklist.md` and use the 4-reviewer protocol from `claude-dotfiles/rules/workflow-review.md`.
 - PR 2 depends on PR 1 being merged — PR 2 branch is cut from `main` after PR 1 lands.
+
+### Compatibility & Rollback
+
+- `cli/v1.3.0` retry layer is independent of v1.4.0 parallelism. If a critical retry bug is found after release, patch to `cli/v1.3.1` without blocking v1.4.0.
+- `cli/v1.4.0` parallelism depends on v1.3.0's retry layer for rate-limit recovery under concurrent load. Users cannot skip v1.3.0 — the `--concurrency` flag without retry will worsen rate-limit failures.
+- If `cli/v1.4.0` is rolled back (e.g., `--concurrency` introduces a regression), users pin to `cli/v1.3.0` which remains functional and is the fallback recommended version. No state incompatibility: neither version persists anything outside the target GitHub repo.
+- Both tags are additive-only (new errors, new CLI flag, new env vars). No existing callers' catch clauses break: `GhTransientError` inherits `GhAPIError` so existing `except GhAPIError` handlers catch it transparently.
 
 ## §6 — Risks & Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | HTTP status regex misses a rare `gh` output format | Error falls through to `GhAPIError`, loses classification | `GhAPIError` still works — we only lose retry eligibility for that one call. Add a test case when encountered. |
-| Rate-limit reset probe itself hits rate-limit (circular) | Infinite loop | Probe does NOT go through `retry_gh`. On probe failure, fall back to 15s fixed sleep. |
+| Rate-limit reset probe itself hits rate-limit (circular) | Infinite loop | Probe does NOT go through `retry_gh` (non-recursion is a test invariant). On probe failure, fall back to 15s fixed sleep with `[rate-limit-probe-failed]` log line. |
+| Parallel workers thundering-herd on rate-limit reset | All workers wake simultaneously, immediately re-hit the rate-limit (especially secondary), extending total wall-clock | Rate-limit wait includes `uniform(0, min(10, wait*0.3))` jitter. Primary rate-limit: harmless since counter refills atomically. Secondary rate-limit: first worker succeeds, others staggered. Under `--concurrency=8+` with persistent secondary rate-limit, multiple retry rounds may still be needed; documented as "use at your own risk" in release notes. |
 | Retry masks a real bug (non-idempotent call retried after partial success) | Duplicate writes | All `gh api` calls in gh-manage are idempotent by design: GET, PUT full-state (labels, protection), DELETE. POST-create-once calls (`ensure_drift_label`) already check for 422 "already exists". Retry is safe. |
 | Parallel workers trigger GitHub secondary rate-limit at `--concurrency=16` | Users who push the flag hit abuse detection | Default is 4 (known-safe); flag clamp to 16 is a hard ceiling; retry layer handles the secondary rate limit if hit. Document in release notes that `--concurrency 8+` is "use at your own risk". |
 | Streaming `as_completed` output looks chaotic (interleaved per-repo reports) | User confusion | Each repo's output is produced atomically inside the worker (single `click.echo(result_str)` per repo); Python's `print`/`click.echo` is thread-safe at the line level on CPython. |
@@ -288,7 +345,7 @@ Progress lines use `\r` or plain newlines — plain newlines chosen for CI log r
 - [ ] `uvx ruff@0.8.0 check src/ tests/` clean.
 - [ ] `uvx ruff@0.8.0 format --check src/ tests/` clean.
 - [ ] `uv run gh-manage drift --all --concurrency 4` completes all 9 current repos with zero FAILED entries (self-dogfood).
-- [ ] `uv run gh-manage drift --all --concurrency 1` produces byte-identical summary (up to timing) to `--all` before this PR.
+- [ ] `uv run gh-manage drift --all --concurrency 1` produces summary lines (per-repo OK/SKIPPED/FAILED entries, in repos.yml order) byte-identical to pre-PR-2 `--all`, excluding the timing line (`[drift --all] N/N scanned in X.XXs`) and the progress indicator (which is only emitted for `--concurrency > 1`).
 - [ ] `uv run gh-manage drift --all --concurrency 17` errors with a clear clamp message.
 - [ ] Parallel smoke test (mocked `_scan_single_repo` with `time.sleep(1)`) finishes in noticeably less wall-clock time than sequential (`concurrency=4 * 3 repos` finishes in under 2s, not 3s).
 - [ ] 4-reviewer protocol clean.
@@ -300,7 +357,7 @@ Progress lines use `\r` or plain newlines — plain newlines chosen for CI log r
 
 ## §8 — Open Questions
 
-None at this time — design decisions Q4-Q6 resolved during 2026-04-17 brainstorming session.
+None at this time — design decisions Q4-Q6 resolved during 2026-04-17 brainstorming session. Spec-critique round 1 findings (CRITICAL + HIGH) folded into §1 (classifier Path A/B, immutable reset_at), §2 (main-thread-only output), §1 retry layer (anti-herd jitter), §3 (expanded probe-failure + network-marker tests), §5 (rollback section), §6 (thundering-herd risk row), §7 (timing-line-excluded acceptance).
 
 ## References
 
