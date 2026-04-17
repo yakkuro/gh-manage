@@ -19,6 +19,10 @@ class CheckContext:
     required_contexts
         Tuple of status-check contexts required by the target repo's
         branch-protection policy on the default branch.
+    profile_required_contexts
+        Tuple of status-check contexts declared required by the
+        bundled profile. Compared against `required_contexts` (the
+        live protection view) in shape/required-contexts-match.
     source_hint
         Short string describing where ci_yml_text came from (local path
         or remote fetch). Used only in error messages.
@@ -28,4 +32,5 @@ class CheckContext:
     ci_yml_text: str
     profile_name: str
     required_contexts: tuple[str, ...]
-    source_hint: str
+    profile_required_contexts: tuple[str, ...] = ()
+    source_hint: str = "unknown"

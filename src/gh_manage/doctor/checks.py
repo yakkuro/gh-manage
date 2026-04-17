@@ -131,3 +131,62 @@ def check_reusable_adoption(ctx: CheckContext) -> tuple[Finding, ...]:
             ),
         ),
     )
+
+
+@register_check("shape/required-contexts-match")
+def check_required_contexts_match(ctx: CheckContext) -> tuple[Finding, ...]:
+    """Diff profile's declared required_contexts vs live protection.
+
+    Missing (profile declares, protection lacks): severity high.
+    Extra (protection enforces, profile doesn't declare): severity medium.
+
+    Spec §3 check 3.
+    """
+    expected = set(ctx.profile_required_contexts)
+    actual = set(ctx.required_contexts)
+    findings: list[Finding] = []
+
+    for missing in sorted(expected - actual):
+        findings.append(
+            Finding(
+                severity="high",
+                check="shape/required-contexts-match",
+                repo=ctx.repo,
+                field_path=f"branches/*/protection:required_status_checks.contexts[{missing}]",
+                current_value=sorted(actual),
+                desired_value=sorted(expected),
+                message=(
+                    f"Profile {ctx.profile_name!r} declares required "
+                    f"context {missing!r} but branch protection is not "
+                    f"enforcing it. PRs can merge without this gate."
+                ),
+                remediation=(
+                    f"Run `gh-manage protection sync {ctx.repo} "
+                    f"--profile {ctx.profile_name} --apply` to enforce."
+                ),
+            )
+        )
+
+    for extra in sorted(actual - expected):
+        findings.append(
+            Finding(
+                severity="medium",
+                check="shape/required-contexts-match",
+                repo=ctx.repo,
+                field_path=f"branches/*/protection:required_status_checks.contexts[{extra}]",
+                current_value=sorted(actual),
+                desired_value=sorted(expected),
+                message=(
+                    f"Branch protection requires context {extra!r} but "
+                    f"profile {ctx.profile_name!r} does not declare it. "
+                    f"Either the profile is incomplete or the protection "
+                    f"is carrying a legacy requirement."
+                ),
+                remediation=(
+                    "Add the context to the profile's required_contexts, "
+                    "OR drop it from branch protection."
+                ),
+            )
+        )
+
+    return tuple(findings)

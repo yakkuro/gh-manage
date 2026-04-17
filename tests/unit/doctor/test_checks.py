@@ -145,3 +145,51 @@ def test_shape_reusable_adoption_fires_when_ci_yml_missing():
         "no .github/workflows/ci.yml found" in findings[0].message.lower()
         or "missing" in findings[0].message.lower()
     )
+
+
+def test_shape_required_contexts_match_flags_missing_high():
+    from gh_manage.doctor.checks import check_required_contexts_match
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text="",
+        profile_name="python-service",
+        required_contexts=(),
+        profile_required_contexts=("PR Gate / PR Gate",),
+        source_hint="test",
+    )
+    findings = check_required_contexts_match(ctx)
+    high = [f for f in findings if f.severity == "high"]
+    assert len(high) == 1
+    assert "not enforc" in high[0].message.lower()
+
+
+def test_shape_required_contexts_match_flags_extra_medium():
+    from gh_manage.doctor.checks import check_required_contexts_match
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text="",
+        profile_name="python-service",
+        required_contexts=("PR Gate / PR Gate", "Custom / Other"),
+        profile_required_contexts=("PR Gate / PR Gate",),
+        source_hint="test",
+    )
+    findings = check_required_contexts_match(ctx)
+    medium = [f for f in findings if f.severity == "medium"]
+    assert len(medium) == 1
+    assert "custom / other" in medium[0].message.lower()
+
+
+def test_shape_required_contexts_match_silent_when_aligned():
+    from gh_manage.doctor.checks import check_required_contexts_match
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text="",
+        profile_name="python-service",
+        required_contexts=("PR Gate / PR Gate",),
+        profile_required_contexts=("PR Gate / PR Gate",),
+        source_hint="test",
+    )
+    assert check_required_contexts_match(ctx) == ()
