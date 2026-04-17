@@ -301,3 +301,52 @@ def test_gh_rate_limit_error_with_reset_at_and_status_code() -> None:
     e = GhRateLimitError("wait", status_code=429, reset_at=ts)
     assert e.status_code == 429
     assert e.reset_at == ts
+
+
+# Task 8: run_gh wraps with retry_gh
+def test_run_gh_retries_transient_failures(mocker: MockerFixture) -> None:
+    """run_gh should retry on HTTP 503 via retry_gh transparently."""
+    mocker.patch("time.sleep", return_value=None)
+
+    # First call 503, second call 200 with stdout "ok\n"
+    responses = [
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Service Unavailable (HTTP 503)\n",
+        ),
+        CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr=""),
+    ]
+    call_count = {"n": 0}
+
+    def fake_run(*args, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    mocker.patch("subprocess.run", side_effect=fake_run)
+
+    result = run_gh(["api", "repos/foo"])
+    assert result == "ok\n"
+    assert call_count["n"] == 2
+
+
+def test_run_gh_non_retriable_passes_through_immediately(
+    mocker: MockerFixture,
+) -> None:
+    """run_gh should NOT retry on 404 — permanent error."""
+    call_count = {"n": 0}
+
+    def fake_run(*args, **kwargs):
+        call_count["n"] += 1
+        return CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        )
+
+    mocker.patch("subprocess.run", side_effect=fake_run)
+    mocker.patch("time.sleep", return_value=None)
+
+    with pytest.raises(GhNotFoundError):
+        run_gh(["api", "repos/missing"])
+    assert call_count["n"] == 1

@@ -168,36 +168,42 @@ def _raise_classified_error(*, endpoint: str, returncode: int, stderr: str) -> N
 
 
 def run_gh(args: list[str], *, stdin_input: str | None = None) -> str:
-    """Run `gh <args>` and return stdout.
+    """Run `gh <args>` and return stdout, with automatic retry on transient
+    failures (5xx + network) and rate-limit recovery.
 
-    `stdin_input`, if provided, is piped into the subprocess stdin. Used
-    by `run_gh_api` when a JSON body is sent via `--input -`.
-
+    See gh_manage.github_retry.retry_gh for the retry policy.
     Raises GhNotInstalledError if gh is not on PATH.
-    Raises a GhError subclass on non-zero exit (classified by stderr).
+    Raises a GhError subclass on non-zero exit after retries are
+    exhausted (classified by stderr).
     """
-    try:
-        result = subprocess.run(
-            ["gh", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            input=stdin_input,
+    # Local import to avoid circular dependency at module load.
+    from gh_manage.github_retry import retry_gh
+
+    def _attempt() -> str:
+        try:
+            result = subprocess.run(
+                ["gh", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                input=stdin_input,
+            )
+        except FileNotFoundError as e:
+            raise GhNotInstalledError(
+                "The `gh` CLI is required but was not found on PATH. "
+                "Install it from https://cli.github.com/ and run `gh auth login`."
+            ) from e
+
+        if result.returncode == 0:
+            return result.stdout
+
+        _raise_classified_error(
+            endpoint=" ".join(args),
+            returncode=result.returncode,
+            stderr=result.stderr,
         )
-    except FileNotFoundError as e:
-        raise GhNotInstalledError(
-            "The `gh` CLI is required but was not found on PATH. "
-            "Install it from https://cli.github.com/ and run `gh auth login`."
-        ) from e
 
-    if result.returncode == 0:
-        return result.stdout
-
-    _raise_classified_error(
-        endpoint=" ".join(args),
-        returncode=result.returncode,
-        stderr=result.stderr,
-    )
+    return retry_gh(_attempt, endpoint=" ".join(args))
 
 
 def run_gh_api(
