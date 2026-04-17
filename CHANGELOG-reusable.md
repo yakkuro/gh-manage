@@ -8,7 +8,7 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 _Nothing yet._
 
-## [1.1.0] - 2026-04-XX
+## [1.1.0] - 2026-04-17
 
 ### Security
 
