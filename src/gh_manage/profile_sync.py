@@ -218,7 +218,7 @@ def apply_files_diff(
     *,
     force: bool = False,
     progress: Callable[[str], None] = lambda _: None,
-) -> None:
+) -> list[Path]:
     """Apply the diff with transactional conflict semantics.
 
     Behavior:
@@ -240,6 +240,11 @@ def apply_files_diff(
     as OSError. No rollback by design — recovery is via `git status` /
     `git checkout`.
 
+    Returns list of paths created or overwritten by this call. init uses
+    this for post-apply doctor rollback (spec §5.B). Overwrite restoration
+    (tempdir backup) is not implemented in this release — rollback only
+    unlinks files that init just created.
+
     `progress` is called with a one-line description per WRITE
     operation (not per skipped/noop entry).
     """
@@ -247,6 +252,7 @@ def apply_files_diff(
         raise ProfileConflictError(diff.overwrites)
 
     target_root_resolved = target_root.resolve()
+    touched: list[Path] = []
 
     def _safe_write(source: Path, dest: Path) -> None:
         # TOCTOU re-validation
@@ -274,7 +280,11 @@ def apply_files_diff(
     for create in diff.creates:
         progress(f"+ create   {create.dest}")
         _safe_write(create.source, create.dest)
+        touched.append(create.dest)
 
     for overwrite in diff.overwrites:
         progress(f"! overwrite {overwrite.dest}")
         _safe_write(overwrite.source, overwrite.dest)
+        touched.append(overwrite.dest)
+
+    return touched
