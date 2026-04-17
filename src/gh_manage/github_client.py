@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime
 from typing import Any, NoReturn
 
 _HTTP_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
@@ -60,7 +61,21 @@ class GhPermissionError(GhError):
 
 
 class GhRateLimitError(GhError):
-    """429 — GitHub API rate limit exhausted."""
+    """429 or 403 rate-limit. reset_at is populated by the retry layer
+    when it has fetched the reset timestamp; the classifier itself
+    always constructs with reset_at=None because stderr lacks the
+    timestamp. Immutable — never mutated after construction.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        reset_at: datetime | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code)
+        self.reset_at = reset_at
 
 
 class GhAPIError(GhError):

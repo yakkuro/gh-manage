@@ -8,6 +8,7 @@ layer: run_gh, run_gh_api, and the GhError classification.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from subprocess import CompletedProcess
 
 import pytest
@@ -282,3 +283,21 @@ def test_gh_transient_error_accepts_status_code() -> None:
 
     e_net = GhTransientError("network", status_code=None)
     assert e_net.status_code is None
+
+
+# Task 4: GhRateLimitError with reset_at
+def test_gh_rate_limit_error_reset_at_defaults_to_none() -> None:
+    from gh_manage.github_client import GhRateLimitError
+
+    e = GhRateLimitError("x")
+    assert e.reset_at is None
+    assert e.status_code is None
+
+
+def test_gh_rate_limit_error_with_reset_at_and_status_code() -> None:
+    from gh_manage.github_client import GhRateLimitError
+
+    ts = datetime(2026, 4, 17, 10, 45, tzinfo=timezone.utc)
+    e = GhRateLimitError("wait", status_code=429, reset_at=ts)
+    assert e.status_code == 429
+    assert e.reset_at == ts
