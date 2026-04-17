@@ -9,9 +9,9 @@ See `CHANGELOG-reusable.md` for release history.
 
 | Input | Execution mechanism | Shell metacharacters | Required source |
 |-------|---------------------|----------------------|-----------------|
-| `install-command` | `${CMD}` (word splitting) | **Not interpreted** | Any source acceptable — the workflow neutralises shell injection by itself. Values with metacharacters will error out at the install binary, not execute. |
-| `test-command` | `${CMD}` (word splitting) | **Not interpreted** | Same as `install-command`. |
-| `setup-command` | `eval "${CMD}"` | **Interpreted** (quotes, \|, `$()`, `;`, etc.) | **Trusted source only.** Consumer is responsible for ensuring the value is a static literal and never comes from untrusted input. |
+| `install-command` | `${CMD}` (word splitting) | Quote/`;`/`\|`/`$()`/backtick/redirection: **not interpreted**. Pathname globbing (`*`, `?`, `[...]`): **still expands** against the working directory. | Trusted workflow-author input. Arbitrary untrusted input (PR title, comment body, etc.) is **not** safe — an attacker-controlled filename combined with a glob pattern can still select which binary runs. |
+| `test-command` | `${CMD}` (word splitting) | Same as `install-command`. | Same as `install-command`. |
+| `setup-command` | `eval "${CMD}"` | **All interpreted** (quotes, `\|`, `$()`, `;`, globs, etc.) | **Trusted source only.** Consumer is responsible for ensuring the value is a static literal and never comes from untrusted input. |
 
 ## What MUST NOT be forwarded to `setup-command`
 
@@ -82,7 +82,7 @@ setup-command: "${{ inputs.user-provided-command }}"
 | Release | Behaviour |
 |---------|-----------|
 | v1.0.x | `install-command`, `test-command`, and `setup-command` all executed via `eval "${CMD}"`. Shell metacharacters in any of the three were interpreted, so forwarding untrusted input to any of them allowed RCE. |
-| v1.1.0 (2026-04-XX) | `install-command` and `test-command` switched to `${CMD}` word splitting. `setup-command` still uses `eval` as a documented escape hatch for quote-preservation patterns (e.g., `pip install -e '.[dev,bot]'`). |
+| v1.1.0 (2026-04-XX) | `install-command` and `test-command` switched to `${CMD}` word splitting. `setup-command` still uses `eval` as a documented escape hatch for quote-preservation patterns (e.g., `pip install -e '.[dev,bot]'`). Pathname globbing still expands in all three inputs; hardening via `set -f` is tracked as a follow-up. |
 
 ## Reporting a security issue
 

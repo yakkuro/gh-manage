@@ -128,16 +128,37 @@ jobs:
           fi
           echo "Injection neutralised: pytest errored on literal ';' arg and 'PWNED_BY_INJECTION' never executed."
 
-  # F3 — Python quoted setup-command compatibility. Proves eval still
-  # honours single quotes inside setup-command (the image-ocr pattern).
+  # F3 — Python quoted setup-command compatibility. Replicates the
+  # reusable workflow's setup step inline so we can assert that the
+  # marker actually reached stdout. Calling the reusable workflow
+  # gives us no way to see its logs from this job, so a compile-only
+  # smoke (the previous shape) would silently pass even if eval's
+  # quote handling regressed.
   python-f3-quoted-setup:
-    name: eval-hardening / python-F3 (quoted setup, expect marker in log)
-    uses: ./.github/workflows/reusable-pr-gate-python.yml
-    with:
-      python-version: "3.12"
-      working-directory: tests/fixtures/projects/python-sample
-      setup-command: "printf '%s\\n' 'quote-preservation-ok'"
-      gh-manage-ref: ${{ github.sha }}
+    name: eval-hardening / python-F3 (quoted setup, marker must appear)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Replicate reusable setup step (eval + quoted args)
+        id: setup
+        shell: bash
+        env:
+          SETUP_CMD: "printf '%s\\n' 'quote-preservation-ok'"
+        run: |
+          set -euo pipefail
+          : > /tmp/setup.log
+          eval "${SETUP_CMD}" 2>&1 | tee -a /tmp/setup.log
+      - name: Assert quote-preservation marker appeared
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -qFx 'quote-preservation-ok' /tmp/setup.log; then
+            echo "::error::expected bare 'quote-preservation-ok' line; eval quote handling regressed"
+            cat /tmp/setup.log
+            exit 1
+          fi
+          echo "Quoted setup-command preserved single quotes through eval."
 
   # ========== TypeScript ==========
 
@@ -227,13 +248,30 @@ jobs:
           fi
           echo "Injection neutralised (typescript)."
 
-  # F3 — TypeScript quoted setup-command. Guards against future TS
-  # consumers adopting a quoted setup-command.
+  # F3 — TypeScript quoted setup-command. Same replication pattern as
+  # python-f3-quoted-setup; see that job for rationale.
   typescript-f3-quoted-setup:
-    name: eval-hardening / ts-F3 (quoted setup, expect marker in log)
-    uses: ./.github/workflows/reusable-pr-gate-typescript.yml
-    with:
-      node-version: "20"
-      working-directory: tests/fixtures/projects/typescript-sample
-      setup-command: "printf '%s\\n' 'ts-quote-preservation-ok'"
-      gh-manage-ref: ${{ github.sha }}
+    name: eval-hardening / ts-F3 (quoted setup, marker must appear)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Replicate reusable setup step (eval + quoted args)
+        id: setup
+        shell: bash
+        env:
+          SETUP_CMD: "printf '%s\\n' 'ts-quote-preservation-ok'"
+        run: |
+          set -euo pipefail
+          : > /tmp/setup.log
+          eval "${SETUP_CMD}" 2>&1 | tee -a /tmp/setup.log
+      - name: Assert quote-preservation marker appeared
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -qFx 'ts-quote-preservation-ok' /tmp/setup.log; then
+            echo "::error::expected bare 'ts-quote-preservation-ok' line; eval quote handling regressed"
+            cat /tmp/setup.log
+            exit 1
+          fi
+          echo "Quoted setup-command preserved single quotes through eval (typescript)."
