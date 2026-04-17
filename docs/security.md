@@ -82,7 +82,7 @@ setup-command: "${{ inputs.user-provided-command }}"
 | Release | Behaviour |
 |---------|-----------|
 | v1.0.x | `install-command`, `test-command`, and `setup-command` all executed via `eval "${CMD}"`. Shell metacharacters in any of the three were interpreted, so forwarding untrusted input to any of them allowed RCE. |
-| v1.1.0 (2026-04-XX) | `install-command` and `test-command` switched to `${CMD}` word splitting. `setup-command` still uses `eval` as a documented escape hatch for quote-preservation patterns (e.g., `pip install -e '.[dev,bot]'`). Pathname globbing still expands in all three inputs; hardening via `set -f` is tracked as a follow-up. |
+| v1.1.0 (2026-04-17) | `install-command` and `test-command` switched to `${CMD}` word splitting. `setup-command` still uses `eval` as a documented escape hatch for quote-preservation patterns (e.g., `pip install -e '.[dev,bot]'`). Pathname globbing still expands in all three inputs; hardening via `set -f` is tracked as a follow-up. |
 
 ## Reporting a security issue
 
