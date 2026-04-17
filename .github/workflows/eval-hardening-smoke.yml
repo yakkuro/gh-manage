@@ -66,6 +66,10 @@ jobs:
       # This is exactly the same shell line as line 133 of
       # reusable-pr-gate-python.yml, so the fixture stays in sync with
       # the production change by construction.
+      #
+      # We capture stdout+stderr inline via tee to /tmp/inject.log.
+      # gh run view --log cannot read logs of an in-progress run, so
+      # the assertion step must read a local file, not the API.
       - name: Replicate reusable test step (expect failure, marker MUST NOT leak)
         id: inject
         continue-on-error: true
@@ -74,42 +78,43 @@ jobs:
         env:
           TEST_CMD: "uv run pytest tests/ ; echo PWNED_BY_INJECTION"
         run: |
-          set -euo pipefail
-          echo "::group::test"
-          echo "Running test-command: ${TEST_CMD}"
-          ${TEST_CMD}
-          echo "::endgroup::"
+          set -uo pipefail
+          : > /tmp/inject.log
+          {
+            echo "Running test-command: ${TEST_CMD}"
+            ${TEST_CMD}
+            echo "::inject-rc::$?"
+          } 2>&1 | tee -a /tmp/inject.log
+          # Propagate inner rc explicitly; `set -e` is intentionally
+          # off above so we can record the failure rather than aborting.
+          rc=$(grep -oE '::inject-rc::[0-9]+' /tmp/inject.log | tail -1 | sed 's/.*:://')
+          echo "inject-rc=${rc:-unknown}"
+          exit "${rc:-1}"
 
       - name: Assert injection marker did not leak
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTCOME: ${{ steps.inject.outcome }}
         run: |
           set -euo pipefail
-          # gh run view <RUN_ID> --log returns combined logs for ALL
-          # jobs in the run (including this in-progress job's completed
-          # prior steps). We do NOT filter by --job because
-          # ${{ github.job }} is the job_id string, not the numeric
-          # job ID that --job expects. The marker string is unique
-          # enough that whole-run grep is sound.
-          if ! gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>/tmp/inject.err; then
-            echo "::error::gh run view failed — cannot verify injection property"
-            cat /tmp/inject.err
-            exit 1
-          fi
           if [[ ! -s /tmp/inject.log ]]; then
-            echo "::error::gh run view returned empty log — cannot verify injection property"
+            echo "::error::/tmp/inject.log empty or missing — inject step did not run"
             exit 1
           fi
           # Confirm logs actually include the inject step's output. If
-          # the TEST_CMD echo is absent, logs are truncated and grep -q
-          # on the marker would be a vacuous check.
+          # the TEST_CMD echo is absent, the capture is broken and
+          # grep -q on the marker would be a vacuous check.
           if ! grep -q 'Running test-command:' /tmp/inject.log; then
-            echo "::error::inject-step logs missing — assertion would be vacuous"
+            echo "::error::inject-step log missing header — assertion would be vacuous"
             exit 1
           fi
-          if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
+          # Match a whole-line marker only. pytest/vitest may echo the
+          # unrecognized positional arg back in "file not found:
+          # PWNED_BY_INJECTION" error lines — that proves injection did
+          # NOT fire (the shell saw it as argv, not a statement). Only a
+          # bare `echo PWNED_BY_INJECTION` produces a standalone-line
+          # marker, which is the true leak signal.
+          if grep -qFx 'PWNED_BY_INJECTION' /tmp/inject.log; then
             echo "::error::injection marker leaked — eval hardening regressed"
             exit 1
           fi
@@ -171,6 +176,8 @@ jobs:
           set -euo pipefail
           pnpm install --frozen-lockfile
 
+      # See python-f2-injection for architecture notes on the inline
+      # tee capture and why we cannot use gh run view --log here.
       - name: Replicate reusable test step (expect failure, marker MUST NOT leak)
         id: inject
         continue-on-error: true
@@ -179,36 +186,38 @@ jobs:
         env:
           TEST_CMD: "pnpm test ; echo PWNED_BY_INJECTION"
         run: |
-          set -euo pipefail
-          echo "::group::test"
-          echo "Running test-command: ${TEST_CMD}"
-          ${TEST_CMD}
-          echo "::endgroup::"
+          set -uo pipefail
+          : > /tmp/inject.log
+          {
+            echo "Running test-command: ${TEST_CMD}"
+            ${TEST_CMD}
+            echo "::inject-rc::$?"
+          } 2>&1 | tee -a /tmp/inject.log
+          rc=$(grep -oE '::inject-rc::[0-9]+' /tmp/inject.log | tail -1 | sed 's/.*:://')
+          echo "inject-rc=${rc:-unknown}"
+          exit "${rc:-1}"
 
       - name: Assert injection marker did not leak
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTCOME: ${{ steps.inject.outcome }}
         run: |
           set -euo pipefail
-          # See comment in python-f2-injection assert step for why we
-          # do not filter --job and why we check log non-emptiness
-          # and presence of the inject step's echo line.
-          if ! gh run view "${{ github.run_id }}" --log > /tmp/inject.log 2>/tmp/inject.err; then
-            echo "::error::gh run view failed — cannot verify injection property"
-            cat /tmp/inject.err
-            exit 1
-          fi
           if [[ ! -s /tmp/inject.log ]]; then
-            echo "::error::gh run view returned empty log — cannot verify injection property"
+            echo "::error::/tmp/inject.log empty or missing — inject step did not run"
             exit 1
           fi
           if ! grep -q 'Running test-command:' /tmp/inject.log; then
-            echo "::error::inject-step logs missing — assertion would be vacuous"
+            echo "::error::inject-step log missing header — assertion would be vacuous"
             exit 1
           fi
-          if grep -q 'PWNED_BY_INJECTION' /tmp/inject.log; then
+          # Match a whole-line marker only. pytest/vitest may echo the
+          # unrecognized positional arg back in "file not found:
+          # PWNED_BY_INJECTION" error lines — that proves injection did
+          # NOT fire (the shell saw it as argv, not a statement). Only a
+          # bare `echo PWNED_BY_INJECTION` produces a standalone-line
+          # marker, which is the true leak signal.
+          if grep -qFx 'PWNED_BY_INJECTION' /tmp/inject.log; then
             echo "::error::injection marker leaked — eval hardening regressed (typescript)"
             exit 1
           fi
