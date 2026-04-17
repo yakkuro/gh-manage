@@ -57,6 +57,14 @@ That's it. The workflow will:
 | `setup-command` | string | `""` | Optional shell command executed after install, before tests. |
 | `pnpm-version` | string | `"10.33.0"` | `pnpm` release pin. Override only if you need a specific release. |
 
+### install-command
+
+**Shell handling (v1.1.0+):** `install-command` executes via `${CMD}` (shell word splitting), not `eval`. Shell metacharacters — pipes, quotes, redirects, `$()`, `;` — are passed to the install binary as literal arguments, not interpreted. If you need shell features, use `setup-command` or commit a shell script to the consumer repository and invoke it by path. See [docs/security.md](../security.md) for the trust model.
+
+### test-command
+
+**Shell handling (v1.1.0+):** `test-command` executes via `${CMD}` (shell word splitting), not `eval`. Same constraints as `install-command` above.
+
 ## Tool versions (v0.2.0)
 
 gh-manage uses a **hybrid pinning strategy** — some tools are pinned inside the composite actions, others are consumer-owned:
@@ -147,6 +155,8 @@ jobs:
 ```
 
 The command runs after `install-command` and before `test-command`. Failure aborts the job with a clear error.
+
+**SECURITY (v1.1.0+):** `setup-command` executes via `eval` and interprets shell metacharacters. Only pass **static literal** values from a trusted source. Never forward `github.event.*`, `workflow_dispatch` inputs, or any consumer-controlled string to this field. See [docs/security.md](../security.md) for the full trust model and list of unsafe patterns.
 
 ## Versioning
 
