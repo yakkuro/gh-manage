@@ -48,6 +48,8 @@ What gh-manage guarantees NOT to break without a MAJOR bump:
 - **Composite action names and inputs** — the 7 composite actions (`log-gh-manage-version`, `setup-python-uv`, `run-ruff`, `run-mypy`, `setup-node-pnpm`, `run-eslint`, `run-tsc`) and their input surfaces are frozen.
 - **Pinned tool versions in reusable workflows** — `uv 0.5.0`, `ruff 0.8.0`, `mypy 1.12.0`, `pnpm 10.33.0`, `typescript 6.0.2`. Upgrading a pinned tool in a way that breaks consumer CI is a MAJOR break.
 
+Documented behaviour changes that tighten security (e.g., removing `eval` from already-risky inputs) may ship in a MINOR version if the change is announced in `CHANGELOG-reusable.md`'s `Security` section and does not alter the declared input surface. v1.1.0 is the first precedent: `install-command` and `test-command` behaviour changed from `eval` to word splitting, but the input types, names, defaults, and required flags are unchanged.
+
 What is explicitly NOT part of the stability promise (internal):
 
 - Module-level Python APIs inside `src/gh_manage/` (e.g., `compute_files_diff` signature). Refactoring is free.

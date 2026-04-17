@@ -8,6 +8,21 @@ The CLI changelog lives in `CHANGELOG-cli.md`.
 
 _Nothing yet._
 
+## [1.1.0] - 2026-04-XX
+
+### Security
+
+- **[Behaviour change]** `install-command` and `test-command` no longer interpret shell metacharacters. Previously both fields were executed via `eval "${CMD}"`, which allowed command injection when consumers passed values sourced from untrusted inputs (`github.event.*` fields, workflow_dispatch inputs). They now execute via `${CMD}` (shell word splitting only). Shell metacharacters in these inputs are passed to the install/test binary as literal arguments rather than interpreted.
+  - All consumers listed in `src/gh_manage/data/repos.yml` as of 2026-04-17 (22 repos) were inspected manually and verified unaffected: none used shell metacharacters in `install-command` or `test-command`.
+  - Consumers that need shell features (quotes, pipes, redirects) in these fields must migrate them to `setup-command` or to a committed shell script invoked by path.
+  - `setup-command` continues to execute via `eval` as a documented escape hatch and is explicitly scoped as "trusted source only" — see `docs/security.md` for the full trust model.
+  - Closes #36.
+
+### Added
+
+- `setup-command` input description now explicitly documents its trust requirements and links to `docs/security.md`.
+- New `docs/security.md` covering the workflow input threat model, safe/unsafe patterns, and version history.
+
 ## [1.0.0] - 2026-04-14
 
 Stable API milestone. No functional changes since v0.2.1.
