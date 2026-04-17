@@ -17,7 +17,15 @@ from typing import Any, NoReturn
 
 
 class GhError(Exception):
-    """Base class for gh CLI subprocess failures. Never raised directly."""
+    """Base class for gh CLI subprocess failures. Never raised directly.
+
+    Subclasses populate status_code when classification came from a parsed
+    HTTP status (Path A). Network-level failures (Path B) leave it None.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GhNotInstalledError(GhError):

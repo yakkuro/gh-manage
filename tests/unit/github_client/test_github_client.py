@@ -179,3 +179,26 @@ def test_run_gh_api_patch_empty_stdout_raises(mocker: MockerFixture) -> None:
             method="PATCH",
             body={"name": "y"},
         )
+
+
+# Task 1: status_code attribute on base GhError
+def test_gh_error_base_accepts_status_code_kwarg() -> None:
+    from gh_manage.github_client import GhError
+
+    e = GhError("boom", status_code=503)
+    assert str(e) == "boom"
+    assert e.status_code == 503
+
+
+def test_gh_error_status_code_defaults_to_none() -> None:
+    from gh_manage.github_client import GhError
+
+    e = GhError("boom")
+    assert e.status_code is None
+
+
+def test_gh_error_subclasses_accept_status_code() -> None:
+    from gh_manage.github_client import GhAuthError, GhNotFoundError
+
+    assert GhAuthError("x", status_code=401).status_code == 401
+    assert GhNotFoundError("x", status_code=404).status_code == 404
