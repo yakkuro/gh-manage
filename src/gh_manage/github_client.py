@@ -12,8 +12,23 @@ generic transport + error classification layer.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any, NoReturn
+
+_HTTP_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
+_RATE_LIMIT_MARKERS = (
+    "api rate limit",
+    "secondary rate limit",
+    "abuse detection",
+)
+_NETWORK_MARKERS = (
+    "dial tcp",
+    "no such host",
+    "connection refused",
+    "i/o timeout",
+    "context deadline exceeded",
+)
 
 
 class GhError(Exception):
@@ -65,41 +80,75 @@ class GhTransientError(GhAPIError):
 def _raise_classified_error(*, endpoint: str, returncode: int, stderr: str) -> NoReturn:
     """Classify `gh` subprocess stderr into a typed GhError subclass.
 
-    Classification order matters: rate limit first (its message may contain
-    HTTP codes), then specific codes, then catch-all.
+    Path A: If `(HTTP <code>)` is present in stderr, dispatch by the
+    parsed status code (with a rate-limit body inspection for 403s).
+
+    Path B: Otherwise, check known network-level markers; fall back to
+    GhAPIError with status_code=None if nothing matches.
     """
     stderr_lower = stderr.lower()
+    m = _HTTP_STATUS_RE.search(stderr)
 
-    if "rate limit" in stderr_lower:
-        raise GhRateLimitError(
-            f"GitHub API rate limit exceeded while calling {endpoint}. "
-            f"Wait for the reset window (see `gh api rate_limit`) and retry."
+    if m is not None:
+        # Path A
+        code = int(m.group(1))
+        if code == 401:
+            raise GhAuthError(
+                "The `gh` CLI is not authenticated or the token is invalid. "
+                "Run `gh auth login` (or `gh auth refresh`) and try again.",
+                status_code=code,
+            )
+        if code == 403:
+            if any(marker in stderr_lower for marker in _RATE_LIMIT_MARKERS):
+                raise GhRateLimitError(
+                    f"GitHub API rate limit exceeded while calling {endpoint}. "
+                    f"Wait for the reset window (see `gh api rate_limit`) and retry.",
+                    status_code=code,
+                )
+            raise GhPermissionError(
+                f"Permission denied on {endpoint}. "
+                f"Your `gh` token may lack the required scope. "
+                f"Run `gh auth refresh -s repo` to add `repo` scope.",
+                status_code=code,
+            )
+        if code == 404:
+            raise GhNotFoundError(
+                f"GitHub API returned 404 for {endpoint}. "
+                f"Check the resource name and your auth status with `gh auth status`.",
+                status_code=code,
+            )
+        if code == 429:
+            raise GhRateLimitError(
+                f"GitHub API rate limit exceeded (HTTP 429) while calling {endpoint}. "
+                f"Wait for the reset window (see `gh api rate_limit`) and retry.",
+                status_code=code,
+            )
+        if code in (500, 502, 503, 504):
+            raise GhTransientError(
+                f"GitHub API returned transient HTTP {code} for {endpoint}. "
+                f"This is typically a temporary upstream issue.",
+                status_code=code,
+            )
+        raise GhAPIError(
+            f"GitHub API call failed: {endpoint} (HTTP {code}). "
+            f"stderr: {stderr.strip()[:500]}. "
+            f"Re-run with `GH_DEBUG=api` to see the full request/response.",
+            status_code=code,
         )
-    if "http 404" in stderr_lower or "not found" in stderr_lower:
-        raise GhNotFoundError(
-            f"GitHub API returned 404 for {endpoint}. "
-            f"Check the resource name and your auth status with `gh auth status`."
-        )
-    if (
-        "bad credentials" in stderr_lower
-        or "not logged in" in stderr_lower
-        or "http 401" in stderr_lower
-    ):
-        raise GhAuthError(
-            "The `gh` CLI is not authenticated or the token is invalid. "
-            "Run `gh auth login` (or `gh auth refresh`) and try again."
-        )
-    if "http 403" in stderr_lower or "forbidden" in stderr_lower:
-        raise GhPermissionError(
-            f"Permission denied on {endpoint}. "
-            f"Your `gh` token may lack the required scope. "
-            f"Run `gh auth refresh -s repo` to add `repo` scope."
+
+    # Path B — no HTTP status parsed
+    if any(marker in stderr_lower for marker in _NETWORK_MARKERS):
+        raise GhTransientError(
+            f"Network-level failure while calling {endpoint}: "
+            f"{stderr.strip()[:200]}. Check connectivity and retry.",
+            status_code=None,
         )
 
     raise GhAPIError(
         f"GitHub API call failed: {endpoint} (exit {returncode}). "
         f"stderr: {stderr.strip()[:500]}. "
-        f"Re-run with `GH_DEBUG=api` to see the full request/response."
+        f"Re-run with `GH_DEBUG=api` to see the full request/response.",
+        status_code=None,
     )
 
 

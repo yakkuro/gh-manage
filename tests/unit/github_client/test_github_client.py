@@ -21,6 +21,7 @@ from gh_manage.github_client import (
     GhNotInstalledError,
     GhPermissionError,
     GhRateLimitError,
+    GhTransientError,
     run_gh,
     run_gh_api,
 )
@@ -42,24 +43,87 @@ def _mock_gh_failure(mocker: MockerFixture, stderr: str, returncode: int = 1):
     )
 
 
-# Error classification — parametrized over all 6 stderr patterns
+# Task 3: Path A (HTTP-status-parsed) classifier
+@pytest.mark.parametrize(
+    ("stderr", "expected_exc", "expected_status"),
+    [
+        # Path A — HTTP status parsed from stderr
+        ("gh: Not Found (HTTP 404)\n", GhNotFoundError, 404),
+        ("gh: Bad credentials (HTTP 401)\n", GhAuthError, 401),
+        ("gh: Forbidden (HTTP 403)\n", GhPermissionError, 403),
+        ("gh: API rate limit exceeded (HTTP 403)\n", GhRateLimitError, 403),
+        (
+            "gh: You have exceeded a secondary rate limit (HTTP 403)\n",
+            GhRateLimitError,
+            403,
+        ),
+        ("gh: abuse detection mechanism (HTTP 403)\n", GhRateLimitError, 403),
+        ("gh: Too Many Requests (HTTP 429)\n", GhRateLimitError, 429),
+        ("gh: Internal Server Error (HTTP 500)\n", GhTransientError, 500),
+        ("gh: Bad Gateway (HTTP 502)\n", GhTransientError, 502),
+        ("gh: Service Unavailable (HTTP 503)\n", GhTransientError, 503),
+        ("gh: Gateway Timeout (HTTP 504)\n", GhTransientError, 504),
+        ("gh: I'm a teapot (HTTP 418)\n", GhAPIError, 418),
+        ("gh: weird code (HTTP 599)\n", GhAPIError, 599),
+    ],
+)
+def test_path_a_http_status_classification(
+    mocker: MockerFixture,
+    stderr: str,
+    expected_exc: type[Exception],
+    expected_status: int,
+) -> None:
+    _mock_gh_failure(mocker, stderr)
+    with pytest.raises(expected_exc) as exc_info:
+        run_gh_api("repos/foo/bar/labels")
+    assert exc_info.value.status_code == expected_status
+
+
+# Task 3: Path B (no HTTP status — network level)
 @pytest.mark.parametrize(
     ("stderr", "expected_exc"),
     [
-        ("HTTP 404: Not Found\n", GhNotFoundError),
-        ("You are not logged in to any GitHub hosts.\n", GhAuthError),
-        ("Bad credentials\n", GhAuthError),
-        ("HTTP 403: Forbidden\n", GhPermissionError),
-        ("API rate limit exceeded\n", GhRateLimitError),
-        ("Some unknown error\n", GhAPIError),
+        ("error: dial tcp: lookup api.github.com: no such host\n", GhTransientError),
+        ("error: dial tcp 140.82.121.5:443: connection refused\n", GhTransientError),
+        ("error: Post https://api.github.com: i/o timeout\n", GhTransientError),
+        ("error: context deadline exceeded\n", GhTransientError),
+        ("error: connection refused\n", GhTransientError),
+        ("error: some totally unknown error\n", GhAPIError),
+        ("\n", GhAPIError),
     ],
 )
-def test_run_gh_api_classifies_stderr_into_typed_exception(
-    mocker: MockerFixture, stderr: str, expected_exc: type[Exception]
+def test_path_b_network_marker_classification(
+    mocker: MockerFixture,
+    stderr: str,
+    expected_exc: type[Exception],
 ) -> None:
     _mock_gh_failure(mocker, stderr)
-    with pytest.raises(expected_exc):
+    with pytest.raises(expected_exc) as exc_info:
         run_gh_api("repos/foo/bar/labels")
+    assert exc_info.value.status_code is None
+
+
+# Task 3: Path A wins when BOTH HTTP status AND network markers present
+def test_path_a_wins_over_path_b_when_both_present(mocker: MockerFixture) -> None:
+    _mock_gh_failure(
+        mocker,
+        "gh: Internal Server Error (HTTP 500): dial tcp failed\n",
+    )
+    with pytest.raises(GhTransientError) as exc_info:
+        run_gh_api("repos/foo/bar/labels")
+    assert exc_info.value.status_code == 500
+
+
+# Task 3: Canary — `gh` CLI format must keep (HTTP <code>) parseable
+def test_canary_gh_cli_http_code_format_parseable() -> None:
+    """If a future gh CLI version drops '(HTTP <code>)' from stderr, this
+    test breaks loudly before every downstream retry test also breaks."""
+    import re
+
+    # This is the exact contract the classifier depends on.
+    match = re.search(r"\(HTTP (\d{3})\)", "gh: Not Found (HTTP 404)\n")
+    assert match is not None
+    assert match.group(1) == "404"
 
 
 # Not-installed case
@@ -75,13 +139,13 @@ def test_run_gh_api_filenotfound_raises_gh_not_installed(
 def test_gh_not_found_error_message_contains_gh_auth_status(
     mocker: MockerFixture,
 ) -> None:
-    _mock_gh_failure(mocker, "HTTP 404: Not Found\n")
+    _mock_gh_failure(mocker, "gh: Not Found (HTTP 404)\n")
     with pytest.raises(GhNotFoundError, match="gh auth status"):
         run_gh_api("repos/foo/bar/labels")
 
 
 def test_gh_auth_error_mentions_gh_auth_login(mocker: MockerFixture) -> None:
-    _mock_gh_failure(mocker, "You are not logged in.\n")
+    _mock_gh_failure(mocker, "gh: Bad credentials (HTTP 401)\n")
     with pytest.raises(GhAuthError, match="gh auth login"):
         run_gh_api("repos/foo/bar/labels")
 
@@ -106,7 +170,7 @@ def test_run_gh_non_zero_exit_propagates_classified_error(
     on non-zero exit — never return silently. Tests exercise run_gh_api
     which wraps run_gh; this test directly verifies run_gh itself so a
     future refactor can't silently regress the non-zero path."""
-    _mock_gh_failure(mocker, "HTTP 404: Not Found\n")
+    _mock_gh_failure(mocker, "gh: Not Found (HTTP 404)\n")
     with pytest.raises(GhError):
         run_gh(["api", "repos/foo/bar/labels"])
 
@@ -206,15 +270,13 @@ def test_gh_error_subclasses_accept_status_code() -> None:
 
 # Task 2: GhTransientError
 def test_gh_transient_error_is_ghapierror_subclass() -> None:
-    from gh_manage.github_client import GhAPIError, GhError, GhTransientError
+    from gh_manage.github_client import GhAPIError, GhError
 
     assert issubclass(GhTransientError, GhAPIError)
     assert issubclass(GhTransientError, GhError)
 
 
 def test_gh_transient_error_accepts_status_code() -> None:
-    from gh_manage.github_client import GhTransientError
-
     e = GhTransientError("temp 503", status_code=503)
     assert e.status_code == 503
 

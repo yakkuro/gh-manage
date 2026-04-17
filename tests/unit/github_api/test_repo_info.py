@@ -52,7 +52,7 @@ def test_get_default_branch_uses_jq_flag(mocker: MockerFixture) -> None:
 
 
 def test_get_default_branch_404_propagates(mocker: MockerFixture) -> None:
-    _mock_gh_failure(mocker, "HTTP 404: Not Found\nRepository does not exist\n")
+    _mock_gh_failure(mocker, "gh: Not Found (HTTP 404)\nRepository does not exist\n")
     with pytest.raises(GhNotFoundError):
         get_default_branch("nonexistent/repo")
 
