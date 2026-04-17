@@ -57,7 +57,7 @@ def test_get_branch_protection_default_branch_is_main(mocker: MockerFixture) -> 
 def test_get_branch_protection_404_propagates_as_gh_not_found(
     mocker: MockerFixture,
 ) -> None:
-    _mock_gh_failure(mocker, "HTTP 404: Not Found\nBranch not protected\n")
+    _mock_gh_failure(mocker, "gh: Not Found (HTTP 404)\nBranch not protected\n")
     with pytest.raises(GhNotFoundError):
         get_branch_protection("yakkuro/gh-manage", "main")
 

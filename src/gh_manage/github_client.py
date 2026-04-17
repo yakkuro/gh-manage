@@ -12,12 +12,36 @@ generic transport + error classification layer.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from datetime import datetime
 from typing import Any, NoReturn
+
+_HTTP_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
+_RATE_LIMIT_MARKERS = (
+    "api rate limit",
+    "secondary rate limit",
+    "abuse detection",
+)
+_NETWORK_MARKERS = (
+    "dial tcp",
+    "no such host",
+    "connection refused",
+    "i/o timeout",
+    "context deadline exceeded",
+)
 
 
 class GhError(Exception):
-    """Base class for gh CLI subprocess failures. Never raised directly."""
+    """Base class for gh CLI subprocess failures. Never raised directly.
+
+    Subclasses populate status_code when classification came from a parsed
+    HTTP status (Path A). Network-level failures (Path B) leave it None.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GhNotInstalledError(GhError):
@@ -37,85 +61,149 @@ class GhPermissionError(GhError):
 
 
 class GhRateLimitError(GhError):
-    """429 — GitHub API rate limit exhausted."""
+    """429 or 403 rate-limit. reset_at is populated by the retry layer
+    when it has fetched the reset timestamp; the classifier itself
+    always constructs with reset_at=None because stderr lacks the
+    timestamp. Immutable — never mutated after construction.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        reset_at: datetime | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code)
+        self.reset_at = reset_at
 
 
 class GhAPIError(GhError):
     """Other non-2xx response (catch-all)."""
 
 
+class GhTransientError(GhAPIError):
+    """Retry-eligible failures — 5xx from GitHub or network-level (no response).
+
+    Inherits GhAPIError so existing `except GhAPIError` catch clauses
+    transparently catch transient failures. The retry layer in
+    gh_manage.github_retry uses `isinstance(e, (GhTransientError,
+    GhRateLimitError))` as its cheap retry predicate.
+    """
+
+
 def _raise_classified_error(*, endpoint: str, returncode: int, stderr: str) -> NoReturn:
     """Classify `gh` subprocess stderr into a typed GhError subclass.
 
-    Classification order matters: rate limit first (its message may contain
-    HTTP codes), then specific codes, then catch-all.
+    Path A: If `(HTTP <code>)` is present in stderr, dispatch by the
+    parsed status code (with a rate-limit body inspection for 403s).
+
+    Path B: Otherwise, check known network-level markers; fall back to
+    GhAPIError with status_code=None if nothing matches.
     """
     stderr_lower = stderr.lower()
+    m = _HTTP_STATUS_RE.search(stderr)
 
-    if "rate limit" in stderr_lower:
-        raise GhRateLimitError(
-            f"GitHub API rate limit exceeded while calling {endpoint}. "
-            f"Wait for the reset window (see `gh api rate_limit`) and retry."
+    if m is not None:
+        # Path A
+        code = int(m.group(1))
+        if code == 401:
+            raise GhAuthError(
+                "The `gh` CLI is not authenticated or the token is invalid. "
+                "Run `gh auth login` (or `gh auth refresh`) and try again.",
+                status_code=code,
+            )
+        if code == 403:
+            if any(marker in stderr_lower for marker in _RATE_LIMIT_MARKERS):
+                raise GhRateLimitError(
+                    f"GitHub API rate limit exceeded while calling {endpoint}. "
+                    f"Wait for the reset window (see `gh api rate_limit`) and retry.",
+                    status_code=code,
+                )
+            raise GhPermissionError(
+                f"Permission denied on {endpoint}. "
+                f"Your `gh` token may lack the required scope. "
+                f"Run `gh auth refresh -s repo` to add `repo` scope.",
+                status_code=code,
+            )
+        if code == 404:
+            raise GhNotFoundError(
+                f"GitHub API returned 404 for {endpoint}. "
+                f"Check the resource name and your auth status with `gh auth status`.",
+                status_code=code,
+            )
+        if code == 429:
+            raise GhRateLimitError(
+                f"GitHub API rate limit exceeded (HTTP 429) while calling {endpoint}. "
+                f"Wait for the reset window (see `gh api rate_limit`) and retry.",
+                status_code=code,
+            )
+        if code in (500, 502, 503, 504):
+            raise GhTransientError(
+                f"GitHub API returned transient HTTP {code} for {endpoint}. "
+                f"This is typically a temporary upstream issue.",
+                status_code=code,
+            )
+        raise GhAPIError(
+            f"GitHub API call failed: {endpoint} (HTTP {code}). "
+            f"stderr: {stderr.strip()[:500]}. "
+            f"Re-run with `GH_DEBUG=api` to see the full request/response.",
+            status_code=code,
         )
-    if "http 404" in stderr_lower or "not found" in stderr_lower:
-        raise GhNotFoundError(
-            f"GitHub API returned 404 for {endpoint}. "
-            f"Check the resource name and your auth status with `gh auth status`."
-        )
-    if (
-        "bad credentials" in stderr_lower
-        or "not logged in" in stderr_lower
-        or "http 401" in stderr_lower
-    ):
-        raise GhAuthError(
-            "The `gh` CLI is not authenticated or the token is invalid. "
-            "Run `gh auth login` (or `gh auth refresh`) and try again."
-        )
-    if "http 403" in stderr_lower or "forbidden" in stderr_lower:
-        raise GhPermissionError(
-            f"Permission denied on {endpoint}. "
-            f"Your `gh` token may lack the required scope. "
-            f"Run `gh auth refresh -s repo` to add `repo` scope."
+
+    # Path B — no HTTP status parsed
+    if any(marker in stderr_lower for marker in _NETWORK_MARKERS):
+        raise GhTransientError(
+            f"Network-level failure while calling {endpoint}: "
+            f"{stderr.strip()[:200]}. Check connectivity and retry.",
+            status_code=None,
         )
 
     raise GhAPIError(
         f"GitHub API call failed: {endpoint} (exit {returncode}). "
         f"stderr: {stderr.strip()[:500]}. "
-        f"Re-run with `GH_DEBUG=api` to see the full request/response."
+        f"Re-run with `GH_DEBUG=api` to see the full request/response.",
+        status_code=None,
     )
 
 
 def run_gh(args: list[str], *, stdin_input: str | None = None) -> str:
-    """Run `gh <args>` and return stdout.
+    """Run `gh <args>` and return stdout, with automatic retry on transient
+    failures (5xx + network) and rate-limit recovery.
 
-    `stdin_input`, if provided, is piped into the subprocess stdin. Used
-    by `run_gh_api` when a JSON body is sent via `--input -`.
-
+    See gh_manage.github_retry.retry_gh for the retry policy.
     Raises GhNotInstalledError if gh is not on PATH.
-    Raises a GhError subclass on non-zero exit (classified by stderr).
+    Raises a GhError subclass on non-zero exit after retries are
+    exhausted (classified by stderr).
     """
-    try:
-        result = subprocess.run(
-            ["gh", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            input=stdin_input,
+    # Local import to avoid circular dependency at module load.
+    from gh_manage.github_retry import retry_gh
+
+    def _attempt() -> str:
+        try:
+            result = subprocess.run(
+                ["gh", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                input=stdin_input,
+            )
+        except FileNotFoundError as e:
+            raise GhNotInstalledError(
+                "The `gh` CLI is required but was not found on PATH. "
+                "Install it from https://cli.github.com/ and run `gh auth login`."
+            ) from e
+
+        if result.returncode == 0:
+            return result.stdout
+
+        _raise_classified_error(
+            endpoint=" ".join(args),
+            returncode=result.returncode,
+            stderr=result.stderr,
         )
-    except FileNotFoundError as e:
-        raise GhNotInstalledError(
-            "The `gh` CLI is required but was not found on PATH. "
-            "Install it from https://cli.github.com/ and run `gh auth login`."
-        ) from e
 
-    if result.returncode == 0:
-        return result.stdout
-
-    _raise_classified_error(
-        endpoint=" ".join(args),
-        returncode=result.returncode,
-        stderr=result.stderr,
-    )
+    return retry_gh(_attempt, endpoint=" ".join(args))
 
 
 def run_gh_api(
