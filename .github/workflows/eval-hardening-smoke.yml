@@ -153,6 +153,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -s /tmp/setup.log ]]; then
+            echo "::error::/tmp/setup.log empty or missing — setup step did not capture output"
+            exit 1
+          fi
           if ! grep -qFx 'quote-preservation-ok' /tmp/setup.log; then
             echo "::error::expected bare 'quote-preservation-ok' line; eval quote handling regressed"
             cat /tmp/setup.log
@@ -269,6 +273,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -s /tmp/setup.log ]]; then
+            echo "::error::/tmp/setup.log empty or missing — setup step did not capture output"
+            exit 1
+          fi
           if ! grep -qFx 'ts-quote-preservation-ok' /tmp/setup.log; then
             echo "::error::expected bare 'ts-quote-preservation-ok' line; eval quote handling regressed"
             cat /tmp/setup.log
