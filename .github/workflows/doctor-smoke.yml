@@ -1,0 +1,47 @@
+name: Doctor Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/gh_manage/doctor/**'
+      - 'src/gh_manage/findings.py'
+      - 'src/gh_manage/data/templates/ci/**'
+      - '.github/workflows/doctor-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/gh_manage/doctor/**'
+      - 'src/gh_manage/findings.py'
+      - 'src/gh_manage/data/templates/ci/**'
+      - '.github/workflows/doctor-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-dogfood:
+    name: doctor-smoke / gh-manage self (expect clean)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: ./actions/setup-python-uv
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --all-extras
+
+      - name: Run doctor on this checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run gh-manage doctor . --profile python-service --report-mode stdout
