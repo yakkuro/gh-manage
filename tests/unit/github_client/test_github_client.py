@@ -202,3 +202,21 @@ def test_gh_error_subclasses_accept_status_code() -> None:
 
     assert GhAuthError("x", status_code=401).status_code == 401
     assert GhNotFoundError("x", status_code=404).status_code == 404
+
+
+# Task 2: GhTransientError
+def test_gh_transient_error_is_ghapierror_subclass() -> None:
+    from gh_manage.github_client import GhAPIError, GhError, GhTransientError
+
+    assert issubclass(GhTransientError, GhAPIError)
+    assert issubclass(GhTransientError, GhError)
+
+
+def test_gh_transient_error_accepts_status_code() -> None:
+    from gh_manage.github_client import GhTransientError
+
+    e = GhTransientError("temp 503", status_code=503)
+    assert e.status_code == 503
+
+    e_net = GhTransientError("network", status_code=None)
+    assert e_net.status_code is None

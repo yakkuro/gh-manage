@@ -52,6 +52,16 @@ class GhAPIError(GhError):
     """Other non-2xx response (catch-all)."""
 
 
+class GhTransientError(GhAPIError):
+    """Retry-eligible failures — 5xx from GitHub or network-level (no response).
+
+    Inherits GhAPIError so existing `except GhAPIError` catch clauses
+    transparently catch transient failures. The retry layer in
+    gh_manage.github_retry uses `isinstance(e, (GhTransientError,
+    GhRateLimitError))` as its cheap retry predicate.
+    """
+
+
 def _raise_classified_error(*, endpoint: str, returncode: int, stderr: str) -> NoReturn:
     """Classify `gh` subprocess stderr into a typed GhError subclass.
 
