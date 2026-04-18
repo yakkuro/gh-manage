@@ -186,7 +186,22 @@ Each commit is small and reviewable in isolation. Revert granularity: if commit 
 
 ### Commit 1 special handling
 
-`git mv drift_sync.py drift_sync/__init__.py` requires first creating the `drift_sync/` directory. Git tracks this as a rename. No content change in this commit. The purpose is purely to reshape the filesystem so later commits can extract submodules.
+Explicit setup sequence (don't rely on `git mv` auto-creating the directory — behavior varies by git version):
+
+```bash
+cd src/gh_manage
+mkdir drift_sync
+git mv drift_sync.py drift_sync/__init__.py
+```
+
+Git tracks this as a rename (blame / `git log --follow` trace back to the original file). No content change in this commit. The purpose is purely to reshape the filesystem so later commits can extract submodules.
+
+Verify after Commit 1:
+```bash
+uv run pytest -q  # all tests pass; the package __init__.py works as drop-in replacement
+ls src/gh_manage/drift_sync/  # exactly one file: __init__.py
+test ! -f src/gh_manage/drift_sync.py  # original file gone
+```
 
 ## §4 — Import strategy per submodule
 
@@ -206,6 +221,53 @@ from gh_manage.drift_sync.context import ScanContext
 ```
 
 In particular, **submodules must NEVER import from `gh_manage.drift_sync` directly** — always go to the specific submodule. Only external callers import from the package.
+
+Import discipline enforcement (spec-critique HIGH 3): Commit 8 adds a lightweight test that greps each submodule for forbidden imports:
+
+```python
+# tests/unit/drift/test_package_structure.py (added in Commit 8)
+def test_submodules_do_not_import_from_package_root() -> None:
+    """Each submodule under drift_sync/ must import only from specific
+    sibling submodules or from external modules, never from
+    `gh_manage.drift_sync` (the package __init__.py). Importing from
+    the package root creates a load-order cycle because __init__.py
+    itself imports from the submodules.
+    """
+    from importlib.resources import files
+
+    package_root = files("gh_manage.drift_sync")
+    submodules = [
+        p
+        for p in package_root.iterdir()
+        if p.is_file()
+        and p.name.endswith(".py")
+        and p.name not in ("__init__.py",)
+    ]
+    assert len(submodules) == 6, (
+        f"Expected 6 submodules (context, registry, adapters, checks, "
+        f"formatters, issue_state), found {len(submodules)}: "
+        f"{sorted(p.name for p in submodules)}"
+    )
+
+    offenders = []
+    for sub in submodules:
+        text = sub.read_text(encoding="utf-8")
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("from gh_manage.drift_sync import") or (
+                stripped.startswith("from gh_manage.drift_sync ")
+                and not stripped.startswith("from gh_manage.drift_sync.")
+            ):
+                offenders.append(f"{sub.name}:{line_no}: {stripped}")
+            if stripped == "import gh_manage.drift_sync":
+                offenders.append(f"{sub.name}:{line_no}: {stripped}")
+    assert not offenders, (
+        "drift_sync submodules must not import from the package root "
+        "(circular import risk). Offenders:\n" + "\n".join(offenders)
+    )
+```
+
+This lint-as-test approach (5 lines of grep-style checks) is cheap to run and catches the entire class of circular-import bugs without needing a separate static-analysis tool.
 
 ### checks.py module-attribute pattern (load-bearing for test mocks)
 
@@ -248,10 +310,18 @@ diff /tmp/pre-split.out /tmp/post-split.out
 uv run gh-manage drift --all  # 22 repos, 0 FAILED
 ```
 
-### New sanity test (added in commit 8)
+### New sanity tests (added in commit 8)
+
+Four tests in a new file `tests/unit/drift/test_package_structure.py`. First two are identity checks; last two are functional/structural guards responding to spec-critique round 1.
 
 ```python
 # tests/unit/drift/test_package_structure.py (new file)
+from __future__ import annotations
+
+import pytest
+from pytest_mock import MockerFixture
+
+
 def test_drift_sync_reexports_are_complete() -> None:
     """Regression guard: every public symbol previously at the
     drift_sync.py top level must still be importable from
@@ -288,22 +358,105 @@ def test_drift_sync_reexports_are_complete() -> None:
     ):
         assert hasattr(drift_sync, name), f"drift_sync missing re-export: {name}"
 
-    # Private symbol used by commands/drift.py
+    # Private symbol used by commands/drift.py via attribute access
     assert hasattr(drift_sync, "_filter_by_severity")
 
 
-def test_mock_path_compatibility() -> None:
-    """Tests patch gh_manage.drift_sync.{labels,protection,issues}_api.*;
-    verify the module bindings still resolve correctly."""
+def test_mock_path_identity() -> None:
+    """Sanity check: drift_sync's module bindings resolve to the actual
+    github_api submodules. This is necessary-but-not-sufficient for the
+    test-mock contract. See test_mock_patch_reaches_checks for the
+    functional verification.
+    """
     from gh_manage import drift_sync
+    from gh_manage.github_api import issues as issues_api
     from gh_manage.github_api import labels as labels_api
     from gh_manage.github_api import protection as protection_api
-    from gh_manage.github_api import issues as issues_api
 
     assert drift_sync.labels_api is labels_api
     assert drift_sync.protection_api is protection_api
     assert drift_sync.issues_api is issues_api
+
+
+def test_mock_patch_reaches_checks(mocker: MockerFixture) -> None:
+    """Functional mock guard (spec-critique HIGH 1, convergent):
+    patching gh_manage.drift_sync.labels_api.list_labels must affect
+    what check_labels sees when run through run_all_checks. If the
+    split ever re-binds labels_api in a way that breaks this flow, the
+    identity check above would still pass but the real mock contract
+    would be broken — this test catches that.
+    """
+    from gh_manage import drift_sync
+    from gh_manage.drift_sync import ScanContext
+    from gh_manage.findings import Finding
+    from gh_manage.models.branch_protection import BranchProtectionConfig
+    from gh_manage.models.labels import LabelsConfig
+    from gh_manage.models.profiles import ProfileSpec
+    from pathlib import Path
+
+    sentinel = [{"name": "sentinel-label", "color": "ffffff", "description": ""}]
+    mock_list = mocker.patch(
+        "gh_manage.drift_sync.labels_api.list_labels",
+        return_value=sentinel,
+    )
+    # Minimal stub ctx — check_labels only reads repo + labels_config.
+    # Other checks fetch protection / profile files; stub those mocks too
+    # so run_all_checks completes without network calls.
+    mocker.patch(
+        "gh_manage.drift_sync.protection_api.get_branch_protection",
+        return_value={},
+    )
+
+    # Build a ScanContext with a valid minimal LabelsConfig; labels_config
+    # is required by check_labels. Use whatever the bundled labels.yml
+    # would produce (empty label set is fine for this test — any findings
+    # shape will do; we only care that list_labels was called).
+    labels_config = LabelsConfig(version=1, labels=[])
+    ctx = ScanContext(
+        path=Path("/tmp"),
+        repo="yakkuro/sentinel-repo",
+        default_branch="main",
+        profile=ProfileSpec(
+            version=1,
+            name="python-service",
+            description="test",
+            files=[],
+            protection_policy=None,
+        ),
+        labels_config=labels_config,
+        bp_config=None,
+    )
+
+    _findings = drift_sync.run_all_checks(ctx)
+    # The mock was consulted at least once during check execution.
+    assert mock_list.called, (
+        "patching gh_manage.drift_sync.labels_api.list_labels did not reach "
+        "check_labels. The split's module-attribute re-exports may be broken."
+    )
+
+
+def test_checks_registration() -> None:
+    """Regression guard (spec-critique HIGH 4): the 3 drift checks
+    must be registered in the _CHECKS registry after package import.
+    If extract Commit 5 introduces a subtle bug (e.g., checks.py not
+    imported by __init__.py, so @register_check never runs), this
+    test catches it — empty _CHECKS would silently return 0 findings
+    on every drift scan.
+    """
+    from gh_manage.drift_sync.registry import _CHECKS
+    from gh_manage.drift_sync.checks import (
+        check_labels,
+        check_protection,
+        check_profile_files,
+    )
+
+    check_fns = {fn for fn in _CHECKS}
+    assert check_labels in check_fns
+    assert check_protection in check_fns
+    assert check_profile_files in check_fns
 ```
+
+The `test_mock_patch_reaches_checks` functional test is the load-bearing regression guard: even if a future refactor breaks the module-object identity relationship (e.g., by re-binding `labels_api` to a wrapper object), this test catches the silent failure.
 
 ## §6 — Release plan
 
@@ -337,7 +490,7 @@ Files bumped:
 - [ ] Each submodule has the function/class list described in §1.
 - [ ] `src/gh_manage/drift_sync/__init__.py` re-exports every public symbol + the 3 `*_api` bindings listed in §2.
 - [ ] `uv run pytest -q` returns the same pass count as before (568 — was 567 + 2 new regression-guard tests). All existing tests pass without modification.
-- [ ] New tests `test_drift_sync_reexports_are_complete` + `test_mock_path_compatibility` pass.
+- [ ] New tests in `tests/unit/drift/test_package_structure.py` all pass: `test_drift_sync_reexports_are_complete`, `test_mock_path_identity`, `test_mock_patch_reaches_checks` (functional mock guard), `test_checks_registration` (_CHECKS populated), `test_submodules_do_not_import_from_package_root` (import-discipline lint-as-test).
 - [ ] `uvx ruff@0.8.0 check + format --check src/ tests/` clean.
 - [ ] `uv run mypy src/` clean.
 - [ ] Self-dogfood: `uv run gh-manage drift . --profile python-service` produces byte-identical (modulo timestamps) output vs. pre-split baseline.
@@ -353,6 +506,14 @@ None. Design decisions resolved during 2026-04-18 brainstorming:
 - Commit granularity: 8 atomic commits.
 - Release bump: cli/v1.7.0 (minor, internal refactor).
 - Test mock paths: preserved via `__init__.py` re-exports; no test edits required.
+
+Spec-critique round 1 findings (5 HIGH, 5 MEDIUM, 2 LOW) addressed:
+- **HIGH 1 + 5 (convergent, mock functional verification)**: §5 now includes `test_mock_patch_reaches_checks` — a functional test that actually patches and runs `run_all_checks`, verifying the mock was observed. Identity check alone is insufficient.
+- **HIGH 2 (Commit 1 directory preset)**: §3 "Commit 1 special handling" now gives the explicit `mkdir` + `git mv` sequence + post-commit verification.
+- **HIGH 3 (import discipline enforcement)**: §4 now includes `test_submodules_do_not_import_from_package_root` — a lint-as-test that greps each submodule for forbidden `from gh_manage.drift_sync import ...` patterns. 5-line test catches the circular-import class of bugs.
+- **HIGH 4 (convergent, _CHECKS population + import order)**: §5 now includes `test_checks_registration` that asserts `_CHECKS` contains all 3 checks post-package-load. Catches the "checks.py not imported → empty registry → silent 0 findings" bug.
+
+MEDIUM and LOW items either covered by the above (most MEDIUMs flagged the same underlying issues) or accepted as documented risks.
 
 ## References
 
