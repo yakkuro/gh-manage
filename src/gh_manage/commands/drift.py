@@ -148,26 +148,43 @@ def _scan_all_repos(
     severity: str,
     report_mode: str,
     output: Path | None,
+    concurrency: int = 4,
 ) -> None:
-    """Scan all enabled repos from repos.yml.
+    """Scan all enabled repos from repos.yml in parallel.
 
-    Prints a structured summary to stderr with scan counts and results.
+    Threading discipline (spec §2): workers are pure functions that
+    return (name, status_label, payload_or_exc). Only the main thread
+    emits to stdout/stderr — no print locks needed, line-atomic output
+    is guaranteed.
     """
-    from gh_manage.models.repos import ReposConfig
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from gh_manage.models.repos import RepoEntry, ReposConfig
 
     repos_path = resolve_repos_path()
     config = load_config(repos_path, ReposConfig)
 
-    results = []
-    skipped = 0
-    failed = 0
+    # Partition repos: enabled vs disabled
+    enabled_entries = [e for e in config.repos if e.enabled]
+    disabled_entries = [e for e in config.repos if not e.enabled]
 
-    for entry in config.repos:
-        if not entry.enabled:
-            results.append(f"  {entry.name}: SKIPPED (disabled)")
-            skipped += 1
-            continue
+    per_repo_results: dict[
+        str, str
+    ] = {}  # name -> "OK" | "SKIPPED (...)" | "FAILED (...)"
 
+    for e in disabled_entries:
+        per_repo_results[e.name] = f"  {e.name}: SKIPPED (disabled)"
+
+    def _worker(entry: RepoEntry) -> tuple[str, str, str | Exception]:
+        """Scan one repo. Returns (name, status, payload_or_exc).
+
+        The broad `except Exception` fallback is intentional for parallel
+        isolation (spec §2): one repo's failure — even from an unexpected
+        exception type like OSError on tempdir creation — must NOT abort
+        the whole --all run. Domain exceptions are caught first for
+        specific error messages; anything else is caught and materialized
+        as FAILED so `future.result()` never raises.
+        """
         try:
             result_str = _scan_single_repo(
                 entry.name,
@@ -177,10 +194,7 @@ def _scan_all_repos(
                 output,
                 skip_profile_check=True,
             )
-            # For stdout/json/markdown mode, print the result
-            if report_mode in ("stdout", "json", "markdown-file"):
-                click.echo(result_str)
-            results.append(f"  {entry.name}: OK")
+            return (entry.name, "OK", result_str)
         except (
             GhError,
             ConfigError,
@@ -189,17 +203,44 @@ def _scan_all_repos(
             ProtectionError,
             DriftError,
         ) as e:
-            results.append(f"  {entry.name}: FAILED ({e})")
-            failed += 1
+            return (entry.name, "FAILED", e)
+        except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
+            return (entry.name, "FAILED", e)
 
-    # Print summary to stderr
-    scanned = len(config.repos) - skipped
+    if enabled_entries and concurrency > 1:
+        click.echo(
+            f"[drift --all] {len(enabled_entries)} repos, concurrency={concurrency}",
+            err=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_to_entry = {pool.submit(_worker, e): e for e in enabled_entries}
+        completed = 0
+        for future in as_completed(future_to_entry):
+            name, status, payload = future.result()
+            completed += 1
+            if status == "OK":
+                if report_mode in ("stdout", "json", "markdown-file"):
+                    click.echo(payload)
+                per_repo_results[name] = f"  {name}: OK"
+            else:  # FAILED
+                per_repo_results[name] = f"  {name}: FAILED ({payload})"
+            if concurrency > 1:
+                click.echo(
+                    f"[drift --all] {completed}/{len(enabled_entries)} scanned",
+                    err=True,
+                )
+
+    scanned = len(enabled_entries)
+    skipped = len(disabled_entries)
+    failed = sum(1 for v in per_repo_results.values() if "FAILED" in v)
     click.echo(
         f"\n--- Scan Summary ---\nScanned: {scanned}, Skipped: {skipped}, Failed: {failed}",
         err=True,
     )
-    for result in results:
-        click.echo(result, err=True)
+    # Print per-repo results in repos.yml order (deterministic)
+    for entry in config.repos:
+        click.echo(per_repo_results[entry.name], err=True)
 
 
 @click.command(
@@ -228,6 +269,15 @@ def _scan_all_repos(
     help="Scan all enabled repos from repos.yml instead of a single path.",
 )
 @click.option(
+    "--concurrency",
+    type=click.IntRange(1, 16),
+    default=4,
+    show_default=True,
+    help="Parallel worker count for --all mode. Values outside [1,16] are rejected. "
+    "Only meaningful with --all; ignored otherwise. "
+    "--concurrency 8+ may interact with GitHub secondary rate-limit.",
+)
+@click.option(
     "--severity",
     type=click.Choice(["critical", "high", "medium", "low"]),
     default="low",
@@ -250,6 +300,7 @@ def drift(
     path: Path | None,
     profile_name: str | None,
     scan_all: bool,
+    concurrency: int,
     severity: str,
     report_mode: str,
     output: Path | None,
@@ -262,7 +313,7 @@ def drift(
                 "--all and path/--profile are mutually exclusive. "
                 "Use either '--all' (scans all repos) or 'path --profile' (single repo)."
             )
-        _scan_all_repos(severity, report_mode, output)
+        _scan_all_repos(severity, report_mode, output, concurrency=concurrency)
         return
 
     # Single-repo mode
