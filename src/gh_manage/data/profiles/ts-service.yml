@@ -1,0 +1,11 @@
+version: 1
+name: ts-service
+description: "TypeScript service repo (npm + eslint + tsc + vitest)"
+files:
+  - source: ci/ts-ci.yml
+    dest: .github/workflows/ci.yml
+  - source: claude-md/default.md
+    dest: CLAUDE.md
+    skip_if_exists: true
+protection_policy: solo-default
+required_contexts: ["PR Gate / PR Gate"]
