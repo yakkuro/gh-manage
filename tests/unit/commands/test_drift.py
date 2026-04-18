@@ -113,6 +113,44 @@ def test_scan_all_repos_one_failure_does_not_abort_others(mocker) -> None:
     assert "yakkuro/bad" in result.output
 
 
+def test_scan_all_repos_unexpected_exception_does_not_abort_scan(mocker) -> None:
+    """Non-domain exceptions (e.g. OSError from tempdir) must NOT escape
+    future.result() and crash --all. Spec §2 parallel isolation requires
+    any exception to be materialized as FAILED.
+    """
+    from gh_manage.models.repos import RepoEntry, ReposConfig
+
+    fake_config = ReposConfig(
+        version=1,
+        repos=[
+            RepoEntry(name="yakkuro/ok", profile="python-service", enabled=True),
+            RepoEntry(name="yakkuro/crash", profile="python-service", enabled=True),
+        ],
+    )
+    mocker.patch("gh_manage.commands.drift.load_config", return_value=fake_config)
+    mocker.patch(
+        "gh_manage.commands.drift.resolve_repos_path",
+        return_value=Path("/fake/repos.yml"),
+    )
+
+    def fake_scan(owner_repo, *args, **kwargs):
+        if owner_repo == "yakkuro/crash":
+            raise OSError("tempdir unavailable")
+        return "ok-output"
+
+    mocker.patch("gh_manage.commands.drift._scan_single_repo", side_effect=fake_scan)
+
+    runner = CliRunner()
+    result = runner.invoke(drift, ["--all", "--concurrency", "2"])
+
+    # Exit 0: the scan completes; the unexpected OSError is materialized as FAILED
+    assert result.exit_code == 0, result.output
+    assert "ok-output" in result.output
+    assert "FAILED" in result.output
+    assert "yakkuro/crash" in result.output
+    assert "yakkuro/ok" in result.output
+
+
 def test_scan_all_repos_summary_in_repos_yml_order(mocker) -> None:
     """Per-repo results may stream in completion order, but the final
     summary must list repos in repos.yml order for deterministic diffs.

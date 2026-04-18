@@ -159,7 +159,7 @@ def _scan_all_repos(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from gh_manage.models.repos import ReposConfig
+    from gh_manage.models.repos import RepoEntry, ReposConfig
 
     repos_path = resolve_repos_path()
     config = load_config(repos_path, ReposConfig)
@@ -175,7 +175,16 @@ def _scan_all_repos(
     for e in disabled_entries:
         per_repo_results[e.name] = f"  {e.name}: SKIPPED (disabled)"
 
-    def _worker(entry):
+    def _worker(entry: RepoEntry) -> tuple[str, str, str | Exception]:
+        """Scan one repo. Returns (name, status, payload_or_exc).
+
+        The broad `except Exception` fallback is intentional for parallel
+        isolation (spec §2): one repo's failure — even from an unexpected
+        exception type like OSError on tempdir creation — must NOT abort
+        the whole --all run. Domain exceptions are caught first for
+        specific error messages; anything else is caught and materialized
+        as FAILED so `future.result()` never raises.
+        """
         try:
             result_str = _scan_single_repo(
                 entry.name,
@@ -194,6 +203,8 @@ def _scan_all_repos(
             ProtectionError,
             DriftError,
         ) as e:
+            return (entry.name, "FAILED", e)
+        except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
             return (entry.name, "FAILED", e)
 
     if enabled_entries and concurrency > 1:
