@@ -94,13 +94,13 @@ def test_reposconfig_multiple_invalid_profiles_aggregated() -> None:
             version=1,
             repos=[
                 RepoEntry(name="yakkuro/a", profile="pytohn-service"),
-                RepoEntry(name="yakkuro/b", profile="ts-service"),
+                RepoEntry(name="yakkuro/b", profile="go-service"),
                 RepoEntry(name="yakkuro/c", profile="unknown-prof"),
             ],
         )
     msg = str(exc_info.value)
     assert "pytohn-service" in msg
-    assert "ts-service" in msg
+    assert "go-service" in msg
     assert "unknown-prof" in msg
     assert msg.count("yakkuro/") == 3  # all three offender names listed
 
