@@ -1,6 +1,6 @@
 [project]
 name = "gh-manage"
-version = "1.4.0"
+version = "1.5.0"
 description = "GitHub-based CI/CD, Issue management, and operational system for yakkuro/* repositories."
 readme = "README.md"
 license = { file = "LICENSE" }
