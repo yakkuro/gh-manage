@@ -98,7 +98,9 @@ Per-repo diff summary:
 8. `gh pr merge <N> --squash --delete-branch` — the test is that this succeeds without `--admin`. Admin-merge indicates the fix did not land correctly.
 9. Remove the scratch clone.
 
-Steps 1-6 run in parallel across the 3 repos. Steps 7-8 happen independently as each PR's CI completes.
+Steps 1-6 run in parallel across the 3 repos. Steps 7-8 are independent per repo — each PR merges as soon as its own CI goes green; no repo waits for the others. If one PR's CI fails while the other two succeed, the successful ones still merge; the failed one is investigated in isolation.
+
+**Async SLA**: Expect each PR's CI to complete within 5-10 minutes (the reusable PR gate runs ruff + mypy + pytest — ~2-3 min for a typical consumer). If CI has not finished 15 minutes after `gh pr create`, check `gh run view --repo yakkuro/<repo>` for the triggered workflow run status and investigate any stall (GitHub Actions queue, runner unavailability, etc.) before blocking on other tasks.
 
 ## §4 — PR metadata (identical for all 3)
 
@@ -126,18 +128,73 @@ Relates: yakkuro/gh-manage#46, yakkuro/gh-manage#27.
 
 **PR title**: `fix(ci): normalize pr-gate job to match PR Gate branch protection`
 
-**PR body**:
+**Per-repo PR body** (concrete, not templated — each repo has its own prior PR number and old-id):
+
+**tg-commander PR body**:
 ```markdown
 ## Problem
 
-This repo's branch protection requires status check `PR Gate / PR Gate`, but `.github/workflows/ci.yml` previously defined the job as `jobs.<old-id>:` (without a `name:` attribute), producing context `<old-id> / PR Gate`. The two never match, so the required check never fires — and every version bump PR hits the protection wall despite green CI.
+This repo's branch protection requires status check `PR Gate / PR Gate`, but `.github/workflows/ci.yml` previously defined the job as `jobs.test:` (without a `name:` attribute), producing context `test / PR Gate`. The two never match, so the required check never fires — and every version bump PR hits the protection wall despite green CI.
 
-The v1.1.0 rollout (yakkuro/gh-manage#27) had to admin-merge this repo's bump PR (`#<prior-PR>`). This fix makes the existing protection functional.
+The v1.1.0 rollout (yakkuro/gh-manage#27) had to admin-merge this repo's bump PR (#2). This fix makes the existing protection functional.
 
 ## Fix
 
-- Job id: `<old-id>` → `pr-gate`
+- Job id: `test` → `pr-gate`
 - Added `name: PR Gate`
+- Everything else (`on:`, `uses:`, `with:`) is byte-identical.
+
+No functional CI change — same installer, same tests, same lint config. Only the status check name.
+
+## Merge test
+
+This PR itself is the acceptance test: if it merges without `--admin`, the fix works.
+
+## References
+
+- yakkuro/gh-manage#46 — root-cause analysis across 3 affected repos
+- yakkuro/gh-manage#27 — Phase 10 rollout context
+- yakkuro/gh-manage#53 — `gh-manage doctor` detects this class of shape mismatch
+```
+
+**repo-init PR body**:
+```markdown
+## Problem
+
+This repo's branch protection requires status check `PR Gate / PR Gate`, but `.github/workflows/ci.yml` previously defined the job as `jobs.call-pr-gate:` (without a `name:` attribute), producing context `call-pr-gate / PR Gate`. The two never match, so the required check never fires — and every version bump PR hits the protection wall despite green CI.
+
+The v1.1.0 rollout (yakkuro/gh-manage#27) had to admin-merge this repo's bump PR (#3). This fix makes the existing protection functional.
+
+## Fix
+
+- Job id: `call-pr-gate` → `pr-gate`
+- Added `name: PR Gate`
+- Everything else (`on:`, `uses:`, `with:`) is byte-identical.
+
+No functional CI change — same installer, same tests, same lint config. Only the status check name.
+
+## Merge test
+
+This PR itself is the acceptance test: if it merges without `--admin`, the fix works.
+
+## References
+
+- yakkuro/gh-manage#46 — root-cause analysis across 3 affected repos
+- yakkuro/gh-manage#27 — Phase 10 rollout context
+- yakkuro/gh-manage#53 — `gh-manage doctor` detects this class of shape mismatch
+```
+
+**deep-research PR body**:
+```markdown
+## Problem
+
+This repo's branch protection requires status check `PR Gate / PR Gate`, but `.github/workflows/ci.yml` previously defined the job as `jobs.pr-gate:` WITHOUT a `name:` attribute, producing context `pr-gate / PR Gate` (lowercase job id used as label). The two never match, so the required check never fires — and every version bump PR hits the protection wall despite green CI.
+
+The v1.1.0 rollout (yakkuro/gh-manage#27) had to admin-merge this repo's bump PR (#14). This fix makes the existing protection functional.
+
+## Fix
+
+- Added `name: PR Gate` (job id `pr-gate` was already correct).
 - Everything else (`on:`, `uses:`, `with:`) is byte-identical.
 
 No functional CI change — same installer, same tests, same lint config. Only the status check name.
@@ -169,6 +226,8 @@ uv run gh-manage doctor yakkuro/<repo> --profile python-service
 ```
 Expected output: `shape/job-shape-coherence` is **clean** (or absent). Other findings (drift, etc.) may remain; those are out of scope.
 
+**Timing**: `doctor` reads the current protection and CI shape from the GitHub API. The `shape/job-shape-coherence` check flips as soon as the fix is on the default branch — no wait for main-branch CI to complete. If doctor still reports the mismatch after merge, either (a) the squash-merge commit diverged from the PR head (inspect `git show <squash-sha>` on main), or (b) a second CI-file-owning PR landed concurrently. Run doctor a second time 5 minutes later to rule out API cache; if still bad, investigate. Do NOT re-push a duplicate fix without understanding the root cause.
+
 ### Close-out validation
 
 ```bash
@@ -184,7 +243,8 @@ Expected: all 22 repos report OK. No new FAILED entries introduced by the 3 chan
 | CI itself fails (pre-existing broken test) | PR can't merge without fixing CI | All 3 repos have shipped prior bump PRs successfully (via admin merge) — CI content is green. If CI fails, it's a new regression; abort and investigate. |
 | Workflow triggers (`on:`) get reformatted by YAML library | Unintended change | Use Read/Edit tools (not yaml.dump round-trip). Preserve existing YAML formatting character-for-character outside the 2 target fields. |
 | `jobs.pr-gate` name collides with another job in the same workflow | YAML parse error | Audit confirms each of the 3 repos has exactly ONE `jobs.<id>:` entry. No collision risk. |
-| CI runs but produces a different context name than expected | Fix didn't work — protection still blocks | Before merging, verify the actual context name via `gh pr checks <PR>` output. If it's still `<old-id> / PR Gate`, something went wrong in step 3 (edit). |
+| CI runs but produces a different context name than expected | Fix didn't work — protection still blocks | Before merging, verify the actual context name via `gh pr checks <PR>` output. If it's still `<old-id> / PR Gate`, something went wrong in step 3 (edit). Abort the merge, re-read the edit diff, and redo steps 3-6 on a fresh branch. Do NOT merge with `--admin` as a workaround — that defeats the test. |
+| Doctor pre-check reports `shape/job-shape-coherence` as **clean** on an unfixed repo | False negative — audit disagrees with doctor | Double-check with `gh api repos/yakkuro/<repo>/branches/main/protection --jq '.required_status_checks.contexts'` vs. `gh api repos/yakkuro/<repo>/contents/.github/workflows/ci.yml` (decode + grep). If audit + API agree but doctor disagrees, file a doctor bug and pause the fix (doctor's real-world validation was a goal — if it regresses here, PR #53 wasn't ready). |
 | Parallel PRs interact (they won't — different repos) | (N/A) | Each PR is in a different repo; no shared state. |
 
 ## §7 — Acceptance Criteria
@@ -198,7 +258,7 @@ Expected: all 22 repos report OK. No new FAILED entries introduced by the 3 chan
 
 ## §8 — Open Questions
 
-None. All design decisions resolved during the 2026-04-17 brainstorming conversation.
+None. All design decisions resolved during the 2026-04-17 brainstorming conversation. Spec-critique round 1 findings (2 HIGH, 3 MEDIUM, 1 LOW) folded into §3 (async SLA), §5 (post-fix timing + fallback), §6 (abort/redo on mismatch + doctor false-negative row), §4 (3 concrete per-repo PR bodies instead of placeholder template).
 
 ## References
 
