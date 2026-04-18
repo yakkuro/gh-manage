@@ -88,6 +88,7 @@ jobs:
           INSTALL_CMD: ${{ inputs.install-command }}
         run: |
           set -euo pipefail
+          set -f  # disable pathname expansion; closes glob injection vector (#44)
           echo "::group::install"
           echo "Running install-command: ${INSTALL_CMD}"
           ${INSTALL_CMD}
@@ -128,6 +129,7 @@ jobs:
           TEST_CMD: ${{ inputs.test-command }}
         run: |
           set -euo pipefail
+          set -f  # disable pathname expansion; closes glob injection vector (#44)
           echo "::group::test"
           echo "Running test-command: ${TEST_CMD}"
           ${TEST_CMD}
