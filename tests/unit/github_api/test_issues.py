@@ -139,7 +139,7 @@ def test_ensure_drift_label_exists_no_post(mocker: MockerFixture) -> None:
 
 
 def test_ensure_drift_label_missing_then_created(mocker: MockerFixture) -> None:
-    """GET 404 → POST to create. Two subprocess calls."""
+    """GET 404 → POST to create. Two subprocess calls; verify POST body."""
     calls: list[CompletedProcess] = [
         CompletedProcess(
             args=[],
@@ -154,17 +154,29 @@ def test_ensure_drift_label_missing_then_created(mocker: MockerFixture) -> None:
             stderr="",
         ),
     ]
-    call_idx = {"n": 0}
+    captured_calls: list[tuple[list[str], str | None]] = []
 
     def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
-        resp = calls[call_idx["n"]]
-        call_idx["n"] += 1
-        return resp
+        argv = args[0] if args else kwargs.get("args") or []
+        stdin = kwargs.get("input")
+        captured_calls.append((list(argv), stdin))  # type: ignore[arg-type]
+        return calls[len(captured_calls) - 1]
 
     mocker.patch("subprocess.run", side_effect=_next_call)
     mocker.patch("time.sleep", return_value=None)
     ensure_drift_label("yakkuro/foo")
-    assert call_idx["n"] == 2
+    assert len(captured_calls) == 2
+
+    # Second call must be POST to /repos/.../labels with the correct body.
+    post_argv, post_stdin = captured_calls[1]
+    assert "-X" in post_argv and "POST" in post_argv
+    post_endpoint = [a for a in post_argv if a.startswith("repos/")][0]
+    assert post_endpoint == "repos/yakkuro/foo/labels"
+    assert post_stdin is not None
+    body = json.loads(post_stdin)
+    assert body["name"] == "gh-manage:drift"
+    assert body["color"] == "d4c5f9"
+    assert "Automated drift report" in body["description"]
 
 
 def test_ensure_drift_label_get_auth_error_propagates(mocker: MockerFixture) -> None:
@@ -268,4 +280,89 @@ def test_ensure_drift_label_post_422_retry_still_fails_raises(
     mocker.patch("subprocess.run", side_effect=_next_call)
     mocker.patch("time.sleep", return_value=None)
     with pytest.raises(GhError):
+        ensure_drift_label("yakkuro/foo")
+
+
+def test_ensure_drift_label_post_422_retry_permission_error_propagates_real_error(
+    mocker: MockerFixture,
+) -> None:
+    """Race retry GET hits 403 (not 404) — real permission issue must
+    propagate unchanged; do NOT mask it as the original 422. Regression
+    guard for review feedback: the old `except GhError` caught too
+    broadly and hid real errors behind the 422.
+    """
+    from gh_manage.github_client import GhPermissionError
+
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Unprocessable Entity (HTTP 422)\n",
+        ),
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Forbidden (HTTP 403)\n"
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("time.sleep", return_value=None)
+    with pytest.raises(GhPermissionError):
+        ensure_drift_label("yakkuro/foo")
+
+
+def test_ensure_drift_label_post_422_retry_rate_limit_propagates_real_error(
+    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Race retry GET hits rate limit (429) — propagate unchanged.
+
+    Without the GhNotFoundError-only catch, the caller would see a
+    misleading 422 and never know to back off on rate limit.
+
+    Uses GH_MANAGE_RATE_LIMIT_WAIT_MAX=0 so retry_gh does not
+    silently retry the rate-limit internally; we want the 429 to
+    reach ensure_drift_label's outer handler where the propagation
+    decision lives.
+    """
+    from gh_manage.github_client import GhRateLimitError
+
+    monkeypatch.setenv("GH_MANAGE_RATE_LIMIT_WAIT_MAX", "0")
+
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Unprocessable Entity (HTTP 422)\n",
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Too Many Requests (HTTP 429)\n",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("gh_manage.github_retry._fetch_rate_limit_reset", return_value=None)
+    mocker.patch("time.sleep", return_value=None)
+    with pytest.raises(GhRateLimitError):
         ensure_drift_label("yakkuro/foo")

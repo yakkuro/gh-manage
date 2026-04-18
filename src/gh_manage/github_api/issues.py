@@ -111,12 +111,16 @@ def ensure_drift_label(repo: str) -> None:
     except GhError as e:
         if e.status_code == 422:
             # Race window: someone created the label between our GET and POST.
-            # Retry GET once; on success, we're done. If the retry GET still
-            # fails, the original 422 was a real validation error — re-raise.
+            # Retry GET once.
+            #   - Success → race resolved, label exists.
+            #   - GhNotFoundError → label really missing, so the 422 was a
+            #     real validation error (not a race) → re-raise original 422.
+            #   - Any other error (permission, rate-limit, auth, transient)
+            #     → propagate unchanged; DO NOT mask real errors as 422.
             try:
                 run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
                 return  # Label exists now, race resolved.
-            except GhError:
+            except GhNotFoundError:
                 raise e from None
         raise
 
