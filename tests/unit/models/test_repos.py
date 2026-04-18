@@ -164,3 +164,43 @@ def test_bundled_profiles_includes_both_python_and_ts() -> None:
     }
     assert "python-service" in names
     assert "ts-service" in names
+
+
+def test_bundled_ts_ci_template_loadable() -> None:
+    """Regression guard: ts-ci.yml is bundled AND parseable AND references
+    a REAL workflow tag (v1.1.0 — the current reusable-workflow tag per
+    docs/versioning.md two-track model), not the CLI tag (cli/v1.X.Y)
+    or a non-existent tag like v1.6.0.
+
+    Catches the class of bug Codex review flagged on PR #60: consumers
+    pointed at a non-existent tag would fail at workflow resolution time.
+    """
+    from importlib.resources import files
+    import yaml
+
+    templates_root = files("gh_manage.data.templates.ci")
+    ts_ci_resource = next(
+        (p for p in templates_root.iterdir() if p.name == "ts-ci.yml"),
+        None,
+    )
+    assert ts_ci_resource is not None, "ts-ci.yml not bundled"
+    assert ts_ci_resource.is_file()
+
+    payload = yaml.safe_load(ts_ci_resource.read_text(encoding="utf-8"))
+    pr_gate = payload["jobs"]["pr-gate"]
+    assert pr_gate["name"] == "PR Gate"
+
+    uses_ref = pr_gate["uses"]
+    assert uses_ref.startswith(
+        "yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@"
+    )
+    tag = uses_ref.rsplit("@", 1)[1]
+    # Workflow tag (vX.Y.Z), not CLI tag (cli/vX.Y.Z). Two-track versioning
+    # per docs/versioning.md — consumers resolve vX.Y.Z, not cli/vX.Y.Z.
+    assert not tag.startswith("cli/"), (
+        f"ts-ci.yml pins {tag!r} which looks like a CLI tag. "
+        "Consumers resolve workflow-track tags (vX.Y.Z). Use v1.1.0 or newer."
+    )
+    assert (
+        pr_gate["with"]["gh-manage-ref"] == tag
+    ), "gh-manage-ref must match the @<tag> in `uses:`."

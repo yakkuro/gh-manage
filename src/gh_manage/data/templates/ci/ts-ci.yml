@@ -25,9 +25,9 @@ permissions:
 jobs:
   pr-gate:
     name: PR Gate
-    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v1.6.0
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v1.1.0
     with:
       node-version: "20"
-      gh-manage-ref: v1.6.0
+      gh-manage-ref: v1.1.0
       install-command: "npm ci"
       test-command: "npm test"
