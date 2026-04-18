@@ -10,9 +10,13 @@ added as they are onboarded.
 
 from __future__ import annotations
 
+from importlib.resources import files
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+
+_PROFILE_EXTENSIONS = (".yml", ".yaml")
 
 
 class RepoEntry(BaseModel):
@@ -44,3 +48,30 @@ class ReposConfig(BaseModel):
 
     version: Literal[1]
     repos: list[RepoEntry]
+
+    @model_validator(mode="after")
+    def _validate_profile_names(self) -> ReposConfig:
+        """Reject entries whose `profile` does not match a bundled profile.
+
+        Looks up profiles via importlib.resources so the check works
+        against installed wheels (not just source trees). All invalid
+        entries are collected and reported in a single error message —
+        a user with 3 typos should see them all in one run, not get
+        whack-a-mole rejections.
+        """
+        profiles_root = files("gh_manage.data.profiles")
+        available = {
+            p.name.rsplit(".", 1)[0]
+            for p in profiles_root.iterdir()
+            if p.is_file() and p.name.endswith(_PROFILE_EXTENSIONS)
+        }
+        invalid = [
+            (e.name, e.profile) for e in self.repos if e.profile not in available
+        ]
+        if invalid:
+            msg_lines = ["Unknown profile references in repos.yml:"]
+            for repo_name, profile in invalid:
+                msg_lines.append(f"  - {repo_name}: profile={profile!r}")
+            msg_lines.append(f"Available profiles: {sorted(available)}")
+            raise ValueError("\n".join(msg_lines))
+        return self
