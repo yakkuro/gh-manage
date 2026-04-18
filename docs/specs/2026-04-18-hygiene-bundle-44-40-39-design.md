@@ -102,6 +102,12 @@ Audit summary (from Phase 10 rollout + consumer survey): 22 consumers. None use 
 ### Testing
 
 No unit tests on reusable workflows (they're YAML). Validation:
+- **Local YAML parse check** before push:
+  ```bash
+  python3 -c "import yaml; yaml.safe_load(open('.github/workflows/reusable-pr-gate-python.yml'))"
+  python3 -c "import yaml; yaml.safe_load(open('.github/workflows/reusable-pr-gate-typescript.yml'))"
+  ```
+  Exit 0 on each means the `set -f` insertion didn't break YAML syntax (inline `#` comments inside a block scalar are fine for GitHub Actions, but explicit parse is a cheap guard).
 - Push to `gh-manage` main triggers `doctor-smoke.yml` + self-dogfood — both exercise the reusable-pr-gate-python workflow locally.
 - v1.5.0 bump PR CI runs against the updated workflow.
 - Post-merge: `gh-manage drift --all` on 22 consumers (all pinned to v1.1.0) is unaffected (their CI doesn't run the new workflow until they bump pin; no regression risk on v1.1.0).
@@ -118,33 +124,46 @@ def ensure_drift_label(repo: str) -> None:
 
     Uses a GET-first pattern to avoid silent-failure classes:
     1. GET /repos/{repo}/labels/{name} — if 200, label already exists; return.
-    2. If 404, POST to create.
-    3. On any other error (GET or POST), raise — no silent swallow.
+    2. If 404 (GhNotFoundError), POST to create.
+    3. If POST hits 422 because a concurrent caller created it between our
+       GET and POST (narrow race window), verify via a single retry GET and
+       return. Any other POST error propagates.
+    4. Any other GET error (auth/permission/transient) propagates.
 
-    Idempotent: safe to call repeatedly; 2 API calls in the common case
-    (label already exists, returns after step 1).
+    Idempotent: safe to call repeatedly; 1 API call when label exists,
+    2 when missing, 3 in the rare race case.
     """
     try:
-        existing = run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
-        if existing is not None:
-            # GET returned the label (dict) — exists, nothing to do.
-            return
+        run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
+        return  # Label exists.
     except GhNotFoundError:
-        # Label does not exist — proceed to create.
-        pass
+        pass  # Expected path: label does not exist yet, proceed to create.
 
-    # At this point, GET either returned None (no body on 404 via run_gh_api
-    # semantics) or raised GhNotFoundError. Either way, label missing.
-    run_gh_api(
-        f"repos/{repo}/labels",
-        method="POST",
-        body={
-            "name": _DRIFT_LABEL,
-            "color": _DRIFT_LABEL_COLOR,
-            "description": _DRIFT_LABEL_DESCRIPTION,
-        },
-    )
+    try:
+        run_gh_api(
+            f"repos/{repo}/labels",
+            method="POST",
+            body={
+                "name": _DRIFT_LABEL,
+                "color": _DRIFT_LABEL_COLOR,
+                "description": _DRIFT_LABEL_DESCRIPTION,
+            },
+        )
+    except GhError as e:
+        if e.status_code == 422:
+            # Race window: someone created the label between our GET and POST.
+            # Retry GET once; on success, we're done. If the retry GET still
+            # fails (e.g., 422 was validation error not already-exists),
+            # propagate the original 422 to avoid masking.
+            try:
+                run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
+                return  # Someone else created it during the race — fine.
+            except GhError:
+                raise e from None
+        raise
 ```
+
+Important transport semantics (confirmed in `src/gh_manage/github_client.py`): `run_gh_api` raises `GhNotFoundError` on HTTP 404 — it does NOT return None for the common 404 case. The try/except pattern above is the correct shape; there is no `if existing is not None` check because no such value is returned on 404.
 
 ### Why GET-first
 
@@ -162,9 +181,7 @@ GET-first:
 
 ### Behavior under GET race
 
-The race window (label created between our GET and POST) is extremely narrow because `ensure_drift_label` is only called from the drift scanner's single-repo code path. But for defensiveness:
-
-If the POST hits 422 because someone created the label between our GET and POST, we currently let it propagate. This is acceptable for now (extremely rare, loud failure signals a real concurrency issue worth investigating). If production observability later shows this happening, extend the function with one retry GET.
+The race window (label created between our GET and POST) is extremely narrow because `ensure_drift_label` is only called from the drift scanner's single-repo code path. However, the fix above handles it proactively with a single retry GET on 422 — closing the race at a negligible cost (1 extra API call only when the race actually fires, which is expected to be essentially never). This is better than deferring the handler behind vague "if observability shows..." criteria because (a) the retry is cheap, (b) the alternative leaves a latent bug that pages on-call when it eventually fires, and (c) it keeps the invariant "no silent 422 swallow" strict.
 
 ### Testing
 
@@ -193,6 +210,9 @@ from importlib.resources import files
 from pydantic import model_validator
 
 
+_PROFILE_EXTENSIONS = (".yml", ".yaml")
+
+
 class ReposConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,10 +221,11 @@ class ReposConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_profile_names(self) -> "ReposConfig":
+        profiles_root = files("gh_manage.data.profiles")
         available = {
-            p.stem
-            for p in files("gh_manage.data.profiles").iterdir()
-            if p.name.endswith(".yml")
+            p.name.rsplit(".", 1)[0]  # strip extension; Traversable has no .stem
+            for p in profiles_root.iterdir()
+            if p.is_file() and p.name.endswith(_PROFILE_EXTENSIONS)
         }
         invalid = [
             (e.name, e.profile)
@@ -213,7 +234,7 @@ class ReposConfig(BaseModel):
         ]
         if invalid:
             msg_lines = [
-                f"Unknown profile references in repos.yml:",
+                "Unknown profile references in repos.yml:",
             ]
             for repo, profile in invalid:
                 msg_lines.append(f"  - {repo}: profile={profile!r}")
@@ -221,6 +242,11 @@ class ReposConfig(BaseModel):
             raise ValueError("\n".join(msg_lines))
         return self
 ```
+
+Design notes:
+- **Accepts both `.yml` and `.yaml`** (currently the bundled set is `.yml`-only, but being liberal with the extension costs nothing and prevents a silent exclusion bug if a contributor adds a `.yaml` profile later).
+- **`p.is_file()`** filters out any directory or symlink — the current profiles dir has only `__init__.py` + profile `.yml` files + `__pycache__/` subdir. The filter keeps only the `.yml` files.
+- **`p.name.rsplit(".", 1)[0]`** (not `.stem`) because `importlib.resources`'s `Traversable` protocol doesn't guarantee a `.stem` property; `.name` is always available. Manual extension strip is safe because we filtered by extension in the list comprehension.
 
 ### Why `mode='after'`
 
@@ -245,6 +271,7 @@ Modify or add test file under `tests/unit/models/` — check existing structure 
 2. `test_invalid_profile_name_fails` — `repos: [{name: "a/b", profile: "pytohn-service"}]` (typo) → ValidationError matching "pytohn-service" and "Available profiles".
 3. `test_multiple_invalid_profiles_aggregated` — 3 entries with bad profile → single error mentioning all 3.
 4. `test_mixed_valid_invalid` — 2 valid + 1 invalid → error mentions only the invalid one.
+5. `test_profiles_dir_accessible_via_importlib_resources` — sanity check: `files("gh_manage.data.profiles")` iteration returns at least one `*.yml` file. Guards against packaging regressions (wheel missing the data dir). If this test passes locally AND in the PR-gate workflow, the validator will work on installed wheels too.
 
 ## §5 — Release Plan
 
@@ -305,7 +332,16 @@ Single gh-manage PR. After merge + `cli/v1.5.0` tag, the reusable workflow chang
 
 ## §8 — Open Questions
 
-None. All design decisions resolved during 2026-04-18 brainstorming.
+None. Spec-critique round 1 findings (6 HIGH, 9 MEDIUM, 1 LOW) addressed:
+
+- **HIGH-1** (convergent — run_gh_api 404 semantics): §3 `ensure_drift_label` simplified to `try/except GhNotFoundError`; verified in github_client.py source that `run_gh_api` raises (does NOT return None on 404). Dead-code path removed.
+- **HIGH-2** (packaging verification): §4 adds a `test_profiles_dir_accessible_via_importlib_resources` test that exercises the same API path as the validator. If packaging drops the dir, the test (run under PR gate) will fail — no silent runtime crash.
+- **HIGH-3** (race observability): §3 implements proactive retry-GET on 422 instead of deferred "add later". 1 extra API call only when the race fires; no latent bug.
+- **HIGH-4** (YAML comment): §2 adds an explicit local `yaml.safe_load` parse check before push; CI is the second line.
+- **HIGH-5** (.yml vs .yaml): §4 validator accepts both extensions.
+- **HIGH-6** (non-file entries): §4 validator filters via `p.is_file()` + extension check.
+
+MEDIUM and LOW items are either covered by the HIGH rewrites or documented as acceptable-as-is.
 
 ## References
 
