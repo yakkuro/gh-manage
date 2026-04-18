@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from subprocess import CompletedProcess
 
+import pytest
 from pytest_mock import MockerFixture
 
 from gh_manage.github_api.issues import (
@@ -113,23 +114,6 @@ def test_close_issue_patches_state_closed(mocker: MockerFixture) -> None:
 
 
 # ensure_drift_label
-def test_ensure_drift_label_creates_label(mocker: MockerFixture) -> None:
-    mock_run = _mock_gh_success(mocker, "{}")
-    ensure_drift_label("yakkuro/gh-manage")
-    args = mock_run.call_args.args[0]
-    assert "repos/yakkuro/gh-manage/labels" in args
-    assert "-X" in args and "POST" in args
-
-
-def test_ensure_drift_label_ignores_422_already_exists(
-    mocker: MockerFixture,
-) -> None:
-    """422 = label already exists. Should not raise."""
-    _mock_gh_failure(mocker, "HTTP 422: Validation Failed\nalready_exists\n")
-    # Should NOT raise
-    ensure_drift_label("yakkuro/gh-manage")
-
-
 # get_issue_comments
 def test_get_issue_comments_returns_list(mocker: MockerFixture) -> None:
     comments = [{"id": 1, "body": "hello"}, {"id": 2, "body": "world"}]
@@ -137,3 +121,151 @@ def test_get_issue_comments_returns_list(mocker: MockerFixture) -> None:
     result = get_issue_comments("yakkuro/gh-manage", 42, per_page=5)
     assert len(result) == 2
     assert result[0]["body"] == "hello"
+
+
+# #40: ensure_drift_label — GET-first, no silent 422 swallow
+def test_ensure_drift_label_exists_no_post(mocker: MockerFixture) -> None:
+    """GET returns the label — function returns without calling POST."""
+    mock_run = _mock_gh_success(
+        mocker, json.dumps({"name": "gh-manage:drift", "color": "d4c5f9"})
+    )
+    ensure_drift_label("yakkuro/foo")
+    assert mock_run.call_count == 1
+    args = mock_run.call_args.args[0]
+    # The single call should be GET to /labels/{name}, not POST to /labels
+    assert "-X" not in args  # run_gh_api without -X means GET (default)
+    endpoint_arg = [a for a in args if a.startswith("repos/")][0]
+    assert endpoint_arg.endswith("/labels/gh-manage:drift")
+
+
+def test_ensure_drift_label_missing_then_created(mocker: MockerFixture) -> None:
+    """GET 404 → POST to create. Two subprocess calls."""
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Not Found (HTTP 404)\n",
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"id": 1, "name": "gh-manage:drift"}),
+            stderr="",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("time.sleep", return_value=None)
+    ensure_drift_label("yakkuro/foo")
+    assert call_idx["n"] == 2
+
+
+def test_ensure_drift_label_get_auth_error_propagates(mocker: MockerFixture) -> None:
+    """GET returns 401 → propagates GhAuthError (no silent swallow)."""
+    from gh_manage.github_client import GhAuthError
+
+    _mock_gh_failure(mocker, "gh: Bad credentials (HTTP 401)\n")
+    mocker.patch("time.sleep", return_value=None)
+    with pytest.raises(GhAuthError):
+        ensure_drift_label("yakkuro/foo")
+
+
+def test_ensure_drift_label_post_permission_error_propagates(
+    mocker: MockerFixture,
+) -> None:
+    """GET 404 → POST 403 (non-rate-limit) → propagates GhPermissionError."""
+    from subprocess import CompletedProcess
+
+    from gh_manage.github_client import GhPermissionError
+
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Forbidden (HTTP 403)\n"
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("time.sleep", return_value=None)
+    with pytest.raises(GhPermissionError):
+        ensure_drift_label("yakkuro/foo")
+
+
+def test_ensure_drift_label_post_422_retries_get(mocker: MockerFixture) -> None:
+    """Race: GET 404 → POST 422 → retry GET succeeds → return."""
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Unprocessable Entity (HTTP 422)\n",
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"name": "gh-manage:drift"}),
+            stderr="",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("time.sleep", return_value=None)
+    ensure_drift_label("yakkuro/foo")
+    assert call_idx["n"] == 3
+
+
+def test_ensure_drift_label_post_422_retry_still_fails_raises(
+    mocker: MockerFixture,
+) -> None:
+    """Race: GET 404 → POST 422 → retry GET still 404 → raise."""
+    from gh_manage.github_client import GhError
+
+    calls: list[CompletedProcess] = [
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+        CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="gh: Unprocessable Entity (HTTP 422)\n",
+        ),
+        CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh: Not Found (HTTP 404)\n"
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    def _next_call(*args: object, **kwargs: object) -> CompletedProcess:
+        resp = calls[call_idx["n"]]
+        call_idx["n"] += 1
+        return resp
+
+    mocker.patch("subprocess.run", side_effect=_next_call)
+    mocker.patch("time.sleep", return_value=None)
+    with pytest.raises(GhError):
+        ensure_drift_label("yakkuro/foo")

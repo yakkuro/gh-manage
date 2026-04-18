@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from gh_manage.github_client import GhError, run_gh_api
+from gh_manage.github_client import (
+    GhError,
+    GhNotFoundError,
+    run_gh_api,
+)
 
 
 _DRIFT_LABEL = "gh-manage:drift"
@@ -80,9 +84,20 @@ def close_issue(repo: str, issue_number: int) -> None:
 def ensure_drift_label(repo: str) -> None:
     """Ensure the `gh-manage:drift` label exists on the repo.
 
-    Attempts to create it. If the label already exists (HTTP 422),
-    the error is silently ignored. Any other error propagates.
+    Uses a GET-first pattern to avoid silent-failure classes:
+    1. GET /repos/{repo}/labels/{name} — if 200, label already exists; return.
+    2. If 404 (GhNotFoundError), POST to create.
+    3. If POST hits 422 because a concurrent caller created the label
+       between our GET and POST (narrow race window), verify via one
+       retry GET and return on success.
+    4. Any other error (GET or POST) propagates — no silent swallow.
     """
+    try:
+        run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
+        return  # Label already exists.
+    except GhNotFoundError:
+        pass  # Label missing, proceed to create.
+
     try:
         run_gh_api(
             f"repos/{repo}/labels",
@@ -94,9 +109,15 @@ def ensure_drift_label(repo: str) -> None:
             },
         )
     except GhError as e:
-        # 422 = label already exists — expected and harmless
-        if "422" in str(e) or "already_exists" in str(e):
-            return
+        if e.status_code == 422:
+            # Race window: someone created the label between our GET and POST.
+            # Retry GET once; on success, we're done. If the retry GET still
+            # fails, the original 422 was a real validation error — re-raise.
+            try:
+                run_gh_api(f"repos/{repo}/labels/{_DRIFT_LABEL}")
+                return  # Label exists now, race resolved.
+            except GhError:
+                raise e from None
         raise
 
 
