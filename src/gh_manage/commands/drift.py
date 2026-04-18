@@ -228,6 +228,15 @@ def _scan_all_repos(
     help="Scan all enabled repos from repos.yml instead of a single path.",
 )
 @click.option(
+    "--concurrency",
+    type=click.IntRange(1, 16),
+    default=4,
+    show_default=True,
+    help="Parallel worker count for --all mode. Values outside [1,16] are rejected. "
+    "Only meaningful with --all; ignored otherwise. "
+    "--concurrency 8+ may interact with GitHub secondary rate-limit.",
+)
+@click.option(
     "--severity",
     type=click.Choice(["critical", "high", "medium", "low"]),
     default="low",
@@ -250,6 +259,7 @@ def drift(
     path: Path | None,
     profile_name: str | None,
     scan_all: bool,
+    concurrency: int,
     severity: str,
     report_mode: str,
     output: Path | None,
