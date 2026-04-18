@@ -137,3 +137,30 @@ def test_profiles_dir_accessible_via_importlib_resources() -> None:
     ]
     assert len(yml_files) >= 1, "No bundled profiles found"
     assert any(p.name == "python-service.yml" for p in yml_files)
+
+
+# #29: ts-service profile integration
+def test_reposconfig_accepts_ts_service_profile() -> None:
+    """ts-service is a bundled profile after this PR — ReposConfig accepts it."""
+    config = ReposConfig(
+        version=1,
+        repos=[RepoEntry(name="yakkuro/foo", profile="ts-service")],
+    )
+    assert config.repos[0].profile == "ts-service"
+
+
+def test_bundled_profiles_includes_both_python_and_ts() -> None:
+    """Regression guard: both profiles exist in the bundled data dir.
+    If the wheel drops ts-service.yml, this test fails in CI instead
+    of the validator silently rejecting 'ts-service' at runtime.
+    """
+    from importlib.resources import files
+
+    profiles_root = files("gh_manage.data.profiles")
+    names = {
+        p.name.rsplit(".", 1)[0]
+        for p in profiles_root.iterdir()
+        if p.is_file() and p.name.endswith((".yml", ".yaml"))
+    }
+    assert "python-service" in names
+    assert "ts-service" in names
