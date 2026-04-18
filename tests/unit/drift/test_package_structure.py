@@ -134,18 +134,25 @@ def test_checks_registration() -> None:
     imported by __init__.py, so @register_check never runs), this test
     catches it — empty _CHECKS would silently return 0 findings on
     every drift scan.
-    """
-    from gh_manage.drift_sync.checks import (
-        check_labels,
-        check_profile_files,
-        check_protection,
-    )
-    from gh_manage.drift_sync.registry import _CHECKS
 
-    check_fns = set(_CHECKS)
-    assert check_labels in check_fns
-    assert check_protection in check_fns
-    assert check_profile_files in check_fns
+    Important: this test imports ONLY `gh_manage.drift_sync` so that the
+    registration must happen via __init__.py's side-effect import chain.
+    Importing `gh_manage.drift_sync.checks` directly here would mask a
+    broken __init__.py (Codex review LOW #1).
+    """
+    import gh_manage.drift_sync  # noqa: F401 — side-effect import under test
+
+    check_names = {fn.__name__ for fn in gh_manage.drift_sync._CHECKS}
+    assert "check_labels" in check_names, (
+        f"check_labels missing from _CHECKS ({check_names}); "
+        f"__init__.py may have lost its `from ...checks import ...` line"
+    )
+    assert (
+        "check_protection" in check_names
+    ), f"check_protection missing from _CHECKS ({check_names})"
+    assert (
+        "check_profile_files" in check_names
+    ), f"check_profile_files missing from _CHECKS ({check_names})"
 
 
 def test_submodules_do_not_import_from_package_root() -> None:
@@ -155,7 +162,14 @@ def test_submodules_do_not_import_from_package_root() -> None:
     package __init__.py). Importing from the package root creates a
     load-order cycle because __init__.py itself imports from every
     submodule.
+
+    Uses AST-based detection (Codex review LOW #3) so that aliased
+    imports (`import gh_manage.drift_sync as ds`) and parent-package
+    imports (`from gh_manage import drift_sync`) are caught alongside
+    the plain forms.
     """
+    import ast
+
     package_root = files("gh_manage.drift_sync")
     submodules = [
         p
@@ -171,15 +185,31 @@ def test_submodules_do_not_import_from_package_root() -> None:
     offenders: list[str] = []
     for sub in submodules:
         text = sub.read_text(encoding="utf-8")
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            stripped = line.strip()
-            if stripped.startswith("from gh_manage.drift_sync import") or (
-                stripped.startswith("from gh_manage.drift_sync ")
-                and not stripped.startswith("from gh_manage.drift_sync.")
-            ):
-                offenders.append(f"{sub.name}:{line_no}: {stripped}")
-            if stripped == "import gh_manage.drift_sync":
-                offenders.append(f"{sub.name}:{line_no}: {stripped}")
+        tree = ast.parse(text, filename=sub.name)
+        for node in ast.walk(tree):
+            # `import gh_manage.drift_sync` or `import gh_manage.drift_sync as X`
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "gh_manage.drift_sync":
+                        offenders.append(
+                            f"{sub.name}:{node.lineno}: import gh_manage.drift_sync"
+                            + (f" as {alias.asname}" if alias.asname else "")
+                        )
+            # `from gh_manage.drift_sync import X` (package root, not a submodule)
+            # and `from gh_manage import drift_sync` (parent-package form)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "gh_manage.drift_sync" and node.level == 0:
+                    names = ", ".join(a.name for a in node.names)
+                    offenders.append(
+                        f"{sub.name}:{node.lineno}: from gh_manage.drift_sync import {names}"
+                    )
+                if node.module == "gh_manage" and node.level == 0:
+                    for alias in node.names:
+                        if alias.name == "drift_sync":
+                            offenders.append(
+                                f"{sub.name}:{node.lineno}: from gh_manage import drift_sync"
+                                + (f" as {alias.asname}" if alias.asname else "")
+                            )
     assert not offenders, (
         "drift_sync submodules must not import from the package root "
         "(circular-import risk). Offenders:\n" + "\n".join(offenders)

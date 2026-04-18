@@ -67,8 +67,6 @@ from gh_manage.drift_sync.adapters import (  # noqa: F401
 # populated with check_labels, check_protection, check_profile_files.
 # DO NOT remove this import or _CHECKS will be empty at runtime.
 from gh_manage.drift_sync.checks import (  # noqa: F401
-    _content_hash,
-    _read_template_content,
     check_labels,
     check_profile_files,
     check_protection,
@@ -110,6 +108,11 @@ __all__ = [
     "CheckFn",
     "register_check",
     "run_all_checks",
+    # Module-attribute bindings (preserve pre-split `from ... import *` surface;
+    # test mocks reach these via gh_manage.drift_sync.labels_api.list_labels etc.)
+    "labels_api",
+    "protection_api",
+    "issues_api",
     # Checks
     "check_labels",
     "check_protection",
