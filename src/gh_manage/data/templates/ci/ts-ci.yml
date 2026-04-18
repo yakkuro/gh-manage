@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# REQUIRED — DO NOT modify the two fields below without also updating branch protection.
+#
+# GitHub Actions generates a status context of the form
+#   "<job.name OR job_id> / <job-step-name-from-reusable-workflow>"
+# The bundled branch-protection policy requires the literal context
+# "PR Gate / PR Gate", so both `pr-gate` as the job id AND `name: "PR Gate"`
+# as the display label must stay as-is.
+#
+# See yakkuro/gh-manage#46 for the incident where this invariant was broken
+# across three repos and caused admin-merges during the v1.1.0 rollout.
+jobs:
+  pr-gate:
+    name: PR Gate
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-typescript.yml@v1.6.0
+    with:
+      node-version: "20"
+      gh-manage-ref: v1.6.0
+      install-command: "npm ci"
+      test-command: "npm test"
