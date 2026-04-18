@@ -38,12 +38,9 @@ Section map:
 
 from __future__ import annotations
 
-import hashlib
 import json as _json
 import re as _re
 from datetime import datetime, timedelta
-from importlib.resources import files as _package_files
-from pathlib import Path
 from typing import Any
 
 
@@ -72,12 +69,13 @@ from gh_manage.drift_sync.registry import (  # noqa: E402, F401
 
 # ========== Adapters (moved to drift_sync.adapters in cli/v1.7.0) ==========
 
+# Module-attribute bindings — test mocks depend on these.
+# `gh_manage.drift_sync.labels_api.list_labels` and the matching binding
+# inside checks.py resolve to the SAME module object, so patching either
+# path flows through every caller inside the package.
 from gh_manage.github_api import issues as issues_api  # noqa: E402, F401
-from gh_manage.github_api import labels as labels_api  # noqa: E402
-from gh_manage.github_api import protection as protection_api  # noqa: E402
-from gh_manage.github_client import GhNotFoundError  # noqa: E402
-from gh_manage.labels_sync import compute_diff as _compute_labels_diff  # noqa: E402
-from gh_manage.protection_sync import compute_protection_diff  # noqa: E402
+from gh_manage.github_api import labels as labels_api  # noqa: E402, F401
+from gh_manage.github_api import protection as protection_api  # noqa: E402, F401
 
 from gh_manage.drift_sync.adapters import (  # noqa: E402, F401
     _labels_diff_to_findings,
@@ -85,161 +83,18 @@ from gh_manage.drift_sync.adapters import (  # noqa: E402, F401
 )
 
 
-# ========== Checks ==========
+# ========== Checks (moved to drift_sync.checks in cli/v1.7.0) ==========
 
-
-@register_check
-def check_labels(ctx: ScanContext) -> tuple[Finding, ...]:
-    """Drift check: repo labels vs ctx.labels_config.
-
-    Calls labels_api.list_labels(ctx.repo) to fetch the current state,
-    then reuses labels_sync.compute_diff() (with prune=True) and translates
-    the resulting LabelsDiff into Finding objects.
-
-    IO: yes (subprocess via labels_api.list_labels). Mocked at the
-    module-attribute boundary (gh_manage.drift_sync.labels_api.list_labels)
-    in scenario tests.
-
-    `prune=True` is used here — drift scan should report extras so the user
-    can see extras, and the adapter marks them low-severity with no
-    remediation command.
-    """
-    current = labels_api.list_labels(ctx.repo)
-    diff = _compute_labels_diff(current, ctx.labels_config, prune=True)
-    return _labels_diff_to_findings(diff, ctx.repo)
-
-
-@register_check
-def check_protection(ctx: ScanContext) -> tuple[Finding, ...]:
-    """Drift check: current branch protection vs profile's policy.
-
-    Returns early with an empty tuple if:
-    - ctx.profile.protection_policy is None (opt-out — profile does
-      not manage protection)
-    - ctx.bp_config is None (CLI builder did not load branch-protection.yml)
-
-    Otherwise:
-    1. Look up the policy in ctx.bp_config.policies by name.
-    2. Fetch current protection via protection_api.get_branch_protection
-       on ctx.default_branch. 404 → treat as empty dict.
-    3. Compute diff via protection_sync.compute_protection_diff.
-    4. Pass the diff through _protection_diff_to_findings.
-
-    IO: yes (subprocess via protection_api). Mocked at
-    gh_manage.drift_sync.protection_api.get_branch_protection in
-    scenario tests.
-    """
-    if ctx.profile.protection_policy is None or ctx.bp_config is None:
-        return ()
-
-    policy = ctx.bp_config.policies[ctx.profile.protection_policy]
-    try:
-        current = protection_api.get_branch_protection(ctx.repo, ctx.default_branch)
-    except GhNotFoundError:
-        current = {}
-
-    diff = compute_protection_diff(current, policy, ctx.profile, ctx.default_branch)
-    return _protection_diff_to_findings(diff, ctx.repo)
-
-
-def _read_template_content(source: str) -> str:
-    """Read a template file from the bundled gh_manage.data.templates
-    package data. `source` is relative path like "ci/python-ci.yml".
-
-    Raises DriftError with actionable context if the template file is
-    missing or unreadable (silent-failure-hunter HIGH #1 fix).
-    """
-    templates_root = Path(str(_package_files("gh_manage.data") / "templates"))
-    template_path = templates_root / source
-    try:
-        return template_path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise DriftError(
-            f"Cannot read bundled template {source!r} at {template_path}: {e}. "
-            f"This may indicate a packaging bug — the template should be "
-            f"bundled in gh_manage.data.templates."
-        ) from e
-
-
-def _content_hash(text: str) -> str:
-    """Compute SHA256 hex digest of a string."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-@register_check
-def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
-    """Drift check: local repo files vs profile's template files.
-
-    For each entry in ctx.profile.files:
-    - Read the template content from gh_manage.data.templates/<source>.
-    - Check if ctx.path / entry.dest exists.
-      - Missing + skip_if_exists=False → severity=medium, "missing file"
-      - Missing + skip_if_exists=True  → no finding (user opted out)
-    - Compare content hashes:
-      - Match → no finding
-      - Mismatch + skip_if_exists=False → severity=medium, "content drifted"
-      - Mismatch + skip_if_exists=True  → severity=low, "content drifted" (informational)
-
-    IO: yes (filesystem reads). Tests inject scenario state via tmp_path
-    in the conftest `drift_scenario` fixture.
-    """
-    findings: list[Finding] = []
-    remediation_apply = f"gh manage apply . --profile {ctx.profile.name} --apply"
-
-    for entry in ctx.profile.files:
-        local = ctx.path / entry.dest
-        template_content = _read_template_content(entry.source)
-        template_hash = _content_hash(template_content)
-
-        if not local.exists():
-            if entry.skip_if_exists:
-                continue
-            findings.append(
-                Finding(
-                    severity="medium",
-                    check="profile_files",
-                    repo=ctx.repo,
-                    field_path=entry.dest,
-                    current_value=None,
-                    desired_value=f"<template {entry.source}>",
-                    message=(
-                        f"Profile file {entry.dest!r} is missing from the "
-                        f"repository (template: {entry.source!r})"
-                    ),
-                    remediation=remediation_apply,
-                )
-            )
-            continue
-
-        try:
-            local_content = local.read_text(encoding="utf-8")
-        except OSError as e:
-            raise DriftError(
-                f"Cannot read {entry.dest!r} at {local}: {e}. Check file permissions."
-            ) from e
-        local_hash = _content_hash(local_content)
-        if local_hash == template_hash:
-            continue
-
-        # Content mismatch
-        severity: Severity = "low" if entry.skip_if_exists else "medium"
-        findings.append(
-            Finding(
-                severity=severity,
-                check="profile_files",
-                repo=ctx.repo,
-                field_path=entry.dest,
-                current_value=f"hash={local_hash[:12]}",
-                desired_value=f"hash={template_hash[:12]}",
-                message=(
-                    f"Profile file {entry.dest!r} has drifted from the "
-                    f"template {entry.source!r}"
-                    + (" (user-editable)" if entry.skip_if_exists else "")
-                ),
-                remediation=remediation_apply if not entry.skip_if_exists else None,
-            )
-        )
-    return tuple(findings)
+# Importing checks triggers @register_check side-effects — _CHECKS is
+# populated with check_labels, check_protection, check_profile_files.
+# DO NOT remove this import or _CHECKS will be empty at runtime.
+from gh_manage.drift_sync.checks import (  # noqa: E402, F401
+    _content_hash,
+    _read_template_content,
+    check_labels,
+    check_profile_files,
+    check_protection,
+)
 
 
 # ========== Report Formatters ==========
