@@ -14,6 +14,7 @@ from gh_manage.commands import (
     labels as labels_cmd,
     protection as protection_cmd,
 )
+from gh_manage.logging_config import LogLevel, configure_logging
 
 
 @click.group(
@@ -24,8 +25,21 @@ from gh_manage.commands import (
     ),
 )
 @click.version_option(version=__version__, prog_name="gh-manage")
-def main() -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(["debug", "info", "warning", "error"], case_sensitive=False),
+    envvar="GH_MANAGE_LOG_LEVEL",
+    default="warning",
+    show_default=True,
+    help=(
+        "Logging verbosity for gh_manage modules. Also honours "
+        "GH_MANAGE_LOG_LEVEL. For JSON output, set GH_MANAGE_LOG_JSON=1."
+    ),
+)
+def main(log_level: str) -> None:
     """Root command group. Subcommands are registered below."""
+    level: LogLevel = log_level.lower()  # type: ignore[assignment]
+    configure_logging(level=level)
 
 
 main.add_command(init_cmd.init)
