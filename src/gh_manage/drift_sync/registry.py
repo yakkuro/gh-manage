@@ -12,11 +12,13 @@ imported by __init__.py for the check to be registered.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from itertools import chain
 
 from gh_manage.drift_sync.context import ScanContext
 from gh_manage.findings import Finding, Severity
+
+log = logging.getLogger(__name__)
 
 CheckFn = Callable[["ScanContext"], tuple[Finding, ...]]
 _CHECKS: list[CheckFn] = []
@@ -46,7 +48,13 @@ def run_all_checks(ctx: ScanContext) -> tuple[Finding, ...]:
     further checks run. MVP does not have a --continue-on-error flag;
     that is filed as a Phase 8.5+ Issue.
     """
-    return tuple(chain.from_iterable(check(ctx) for check in _CHECKS))
+    all_findings: list[Finding] = []
+    for check in _CHECKS:
+        log.debug("running check: %s", check.__name__)
+        findings = check(ctx)
+        log.debug("check %s returned %d findings", check.__name__, len(findings))
+        all_findings.extend(findings)
+    return tuple(all_findings)
 
 
 _SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
