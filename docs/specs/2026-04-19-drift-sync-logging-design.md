@@ -104,16 +104,26 @@ def configure_logging(
 
     - level: log level for the `gh_manage` logger tree. Third-party
       packages' loggers are untouched.
-    - json: if True, emit JSON-line records via python-json-logger.
-      If None (default), read GH_MANAGE_LOG_JSON env var (truthy → JSON).
-      Cron / agent workflows set GH_MANAGE_LOG_JSON=1; humans don't.
+    - json: tri-state. Precedence: explicit `json=True/False` wins
+      over env var. If `json is None` (default), read
+      `GH_MANAGE_LOG_JSON` env var; truthy values ("1", "true", "yes",
+      case-insensitive) → JSON, everything else → plain. No env var +
+      no explicit arg → plain.
     - stream: destination for log output. Defaults to sys.stderr.
-      Overridable so unit tests can capture via StringIO without
-      touching real stderr (addresses spec-critique HIGH 1).
+      Production callers (cli.py) should omit this argument. Unit
+      tests pass a StringIO to capture output without touching real
+      stderr (addresses spec-critique round 1 HIGH).
 
     Side effect: clears existing handlers on the `gh_manage` logger and
     replaces them with a single StreamHandler bound to `stream`.
     Callers should invoke this exactly once, at CLI entry.
+
+    Immutability: the plain and JSON formatter strings (including
+    datefmt) are fixed by this module — not runtime-configurable.
+    Changing them requires editing logging_config.py, so `caplog`-based
+    tests can rely on the record shape. This is intentional: runtime
+    format customization would bloat the contract without real user
+    demand (addresses spec-critique round 2 MEDIUM #2).
     """
 ```
 
