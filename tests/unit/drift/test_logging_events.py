@@ -258,7 +258,12 @@ def test_worker_logs_exception_with_traceback(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """#62 HIGH #5 regression guard: unexpected exceptions in the
-    parallel worker now leave a traceback in the logs."""
+    parallel worker now leave a traceback in the logs.
+
+    Tests the actual module-level `_scan_worker` (not a test replica),
+    so removal or regression of the production log.exception call will
+    fail this test (addresses Codex review MEDIUM #1).
+    """
     import gh_manage.commands.drift as drift_cmd
     from gh_manage.models.repos import RepoEntry
 
@@ -268,34 +273,10 @@ def test_worker_logs_exception_with_traceback(
         side_effect=TypeError("sentinel"),
     )
 
-    # _worker is defined inside `drift` command body and closes over
-    # severity/report_mode/output. We construct a minimal callable by
-    # invoking the same code path: the commands/drift._worker replica
-    # here mirrors the production shape for test isolation.
-    def _worker(entry: RepoEntry) -> tuple[str, str, str | Exception]:
-        try:
-            result_str = drift_cmd._scan_single_repo(
-                entry.name,
-                entry.profile,
-                "low",
-                "stdout",
-                None,
-                skip_profile_check=True,
-            )
-            return (entry.name, "OK", result_str)
-        except Exception as exc:  # noqa: BLE001
-            drift_cmd.log.exception(
-                "unexpected error scanning %s (%s: %s)",
-                entry.name,
-                type(exc).__name__,
-                exc,
-            )
-            return (entry.name, "FAILED", exc)
-
     entry = RepoEntry(name="yakkuro/sentinel-repo", profile="python-service")
 
     with caplog.at_level(logging.ERROR, logger="gh_manage.commands.drift"):
-        name, status, payload = _worker(entry)
+        name, status, payload = drift_cmd._scan_worker(entry, "low", "stdout", None)
 
     assert name == "yakkuro/sentinel-repo"
     assert status == "FAILED"
@@ -311,13 +292,20 @@ def test_worker_logs_exception_with_traceback(
 
 def test_debug_events_hidden_at_warning_level(
     mocker: MockerFixture,
-    caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
-    """At default WARNING level, DEBUG events from registry/checks are
-    not captured. This is a floor sanity check; if it fails, every
-    `gh-manage drift .` invocation would spew debug output."""
+    """Default configure_logging() level (WARNING) suppresses DEBUG
+    emissions at the logger itself, before any handler sees them. If
+    configure_logging's default is broken to DEBUG, this test fails.
+
+    Drives the actual production configuration (addresses Codex review
+    MEDIUM #2: the previous version used caplog.at_level to force
+    WARNING, making the test tautological).
+    """
+    import io
+
     from gh_manage.drift_sync import run_all_checks
+    from gh_manage.logging_config import configure_logging
 
     mocker.patch("gh_manage.drift_sync.checks.labels_api.list_labels", return_value=[])
     mocker.patch(
@@ -327,12 +315,15 @@ def test_debug_events_hidden_at_warning_level(
 
     ctx = _make_scan_context(tmp_path)
 
-    with caplog.at_level(logging.WARNING, logger="gh_manage.drift_sync"):
-        run_all_checks(ctx)
+    # Call configure_logging WITHOUT a level arg so the defaulting path
+    # is exercised; writes to a StringIO so we can inspect emitted text.
+    buf = io.StringIO()
+    configure_logging(stream=buf)  # default level="warning"
 
-    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-    assert not debug_records, (
-        "DEBUG records were captured at WARNING level — logger config "
-        "is letting them through. Records: "
-        f"{[r.getMessage() for r in debug_records]}"
+    run_all_checks(ctx)
+
+    emitted = buf.getvalue()
+    assert "DEBUG" not in emitted, (
+        "DEBUG line reached the configured handler — configure_logging's "
+        f"default level is not filtering them. Output:\n{emitted}"
     )

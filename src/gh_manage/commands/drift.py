@@ -41,6 +41,7 @@ from gh_manage.github_client import GhError
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
+from gh_manage.models.repos import RepoEntry
 from gh_manage.profile_sync import ProfileError
 from gh_manage.protection_sync import ProtectionError
 
@@ -149,6 +150,59 @@ def _scan_single_repo(
             raise ValueError(f"Unknown report mode: {report_mode!r}")
 
 
+def _scan_worker(
+    entry: RepoEntry,
+    severity: str,
+    report_mode: str,
+    output: Path | None,
+) -> tuple[str, str, str | Exception]:
+    """Scan one repo for --all mode. Returns (name, status, payload_or_exc).
+
+    The broad `except Exception` fallback is intentional for parallel
+    isolation (spec §2): one repo's failure — even from an unexpected
+    exception type like OSError on tempdir creation — must NOT abort
+    the whole --all run. Domain exceptions are caught first for
+    specific error messages; anything else is caught and materialized
+    as FAILED so `future.result()` never raises.
+
+    Module-level (not a closure) so tests can invoke the real production
+    function directly without replicating its shape inline.
+    """
+    try:
+        result_str = _scan_single_repo(
+            entry.name,
+            entry.profile,
+            severity,
+            report_mode,
+            output,
+            skip_profile_check=True,
+        )
+        return (entry.name, "OK", result_str)
+    except (
+        GhError,
+        ConfigError,
+        GitError,
+        ProfileError,
+        ProtectionError,
+        DriftError,
+    ) as e:
+        log.warning(
+            "expected error scanning %s (%s): %s",
+            entry.name,
+            type(e).__name__,
+            e,
+        )
+        return (entry.name, "FAILED", e)
+    except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
+        log.exception(
+            "unexpected error scanning %s (%s: %s)",
+            entry.name,
+            type(e).__name__,
+            e,
+        )
+        return (entry.name, "FAILED", e)
+
+
 def _scan_all_repos(
     severity: str,
     report_mode: str,
@@ -164,7 +218,7 @@ def _scan_all_repos(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from gh_manage.models.repos import RepoEntry, ReposConfig
+    from gh_manage.models.repos import ReposConfig
 
     repos_path = resolve_repos_path()
     config = load_config(repos_path, ReposConfig)
@@ -180,44 +234,6 @@ def _scan_all_repos(
     for e in disabled_entries:
         per_repo_results[e.name] = f"  {e.name}: SKIPPED (disabled)"
 
-    def _worker(entry: RepoEntry) -> tuple[str, str, str | Exception]:
-        """Scan one repo. Returns (name, status, payload_or_exc).
-
-        The broad `except Exception` fallback is intentional for parallel
-        isolation (spec §2): one repo's failure — even from an unexpected
-        exception type like OSError on tempdir creation — must NOT abort
-        the whole --all run. Domain exceptions are caught first for
-        specific error messages; anything else is caught and materialized
-        as FAILED so `future.result()` never raises.
-        """
-        try:
-            result_str = _scan_single_repo(
-                entry.name,
-                entry.profile,
-                severity,
-                report_mode,
-                output,
-                skip_profile_check=True,
-            )
-            return (entry.name, "OK", result_str)
-        except (
-            GhError,
-            ConfigError,
-            GitError,
-            ProfileError,
-            ProtectionError,
-            DriftError,
-        ) as e:
-            return (entry.name, "FAILED", e)
-        except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
-            log.exception(
-                "unexpected error scanning %s (%s: %s)",
-                entry.name,
-                type(e).__name__,
-                e,
-            )
-            return (entry.name, "FAILED", e)
-
     if enabled_entries and concurrency > 1:
         click.echo(
             f"[drift --all] {len(enabled_entries)} repos, concurrency={concurrency}",
@@ -225,7 +241,10 @@ def _scan_all_repos(
         )
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        future_to_entry = {pool.submit(_worker, e): e for e in enabled_entries}
+        future_to_entry = {
+            pool.submit(_scan_worker, e, severity, report_mode, output): e
+            for e in enabled_entries
+        }
         completed = 0
         for future in as_completed(future_to_entry):
             name, status, payload = future.result()

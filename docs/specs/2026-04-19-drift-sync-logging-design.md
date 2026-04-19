@@ -210,16 +210,18 @@ The existing `click.echo` user-facing summary output is **not** touched. Logging
 
 ### 3.5 JSON output example
 
+`python-json-logger`'s `JsonFormatter` derives field names from the format string tokens: `%(asctime)s` → `asctime`, `%(levelname)s` → `levelname`, `%(name)s` → `name`, `%(message)s` → `message`. These are the actual keys in the emitted JSON; agent consumers filter on them directly.
+
 ```
 $ GH_MANAGE_LOG_JSON=1 gh-manage --log-level info drift yakkuro/llm-kb 2>&1 >/dev/null | jq .
-{"timestamp": "2026-04-19T10:23:00", "level": "INFO", "name": "gh_manage.commands.drift", "message": "scanning yakkuro/llm-kb (profile=python-service)"}
-{"timestamp": "2026-04-19T10:23:02", "level": "INFO", "name": "gh_manage.drift_sync.issue_state", "message": "updated drift issue #42 on yakkuro/llm-kb (5 findings)"}
+{"asctime": "2026-04-19T10:23:00", "levelname": "INFO", "name": "gh_manage.commands.drift", "message": "scanning yakkuro/llm-kb (profile=python-service)"}
+{"asctime": "2026-04-19T10:23:02", "levelname": "INFO", "name": "gh_manage.drift_sync.issue_state", "message": "updated drift issue #42 on yakkuro/llm-kb (5 findings)"}
 ```
 
 Agent queries enabled by JSON:
-- `jq 'select(.level=="ERROR") | .name + ": " + .message'`
+- `jq 'select(.levelname=="ERROR") | .name + ": " + .message'`
 - `jq 'select(.message | contains("yakkuro/llm-kb"))'`
-- Combined with `jq -s 'group_by(.level) | map({level: .[0].level, count: length})'` for severity buckets
+- Combined with `jq -s 'group_by(.levelname) | map({level: .[0].levelname, count: length})'` for severity buckets
 
 ## §4 — Deviation from "pure additive"
 

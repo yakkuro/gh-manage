@@ -102,3 +102,18 @@ def test_configure_logging_does_not_add_handler_to_root_logger() -> None:
     assert (
         root_handlers_before == root_handlers_after
     ), "configure_logging must not touch the root logger — only the `gh_manage` tree."
+
+
+def test_configure_logging_sets_propagate_false() -> None:
+    """configure_logging must set gh_manage.propagate = False to prevent
+    duplicate output when a caller also configures a root handler.
+
+    This is a separate assertion from the root-handler test above because
+    a logger can have no root handler yet still propagate records up
+    through the logging tree — testing both is necessary to fully lock
+    down the isolation contract (addresses Codex review LOW).
+    """
+    from gh_manage.logging_config import configure_logging
+
+    configure_logging()
+    assert logging.getLogger("gh_manage").propagate is False
