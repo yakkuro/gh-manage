@@ -13,6 +13,7 @@ Architecture:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -43,6 +44,8 @@ from gh_manage.models.profiles import ProfileSpec
 from gh_manage.profile_sync import ProfileError
 from gh_manage.protection_sync import ProtectionError
 
+log = logging.getLogger(__name__)
+
 
 def _scan_single_repo(
     owner_repo: str,
@@ -66,6 +69,7 @@ def _scan_single_repo(
     Returns:
         Status/result string for the repo.
     """
+    log.info("scanning %s (profile=%s)", owner_repo, profile_name)
     # Get default branch
     default_branch = repo_info.get_default_branch(owner_repo)
 
@@ -110,6 +114,7 @@ def _scan_single_repo(
     )
 
     all_findings = drift_sync.run_all_checks(ctx)
+    log.info("scan complete for %s: %d findings", owner_repo, len(all_findings))
     filtered = drift_sync._filter_by_severity(all_findings, severity)  # type: ignore[arg-type]
 
     match report_mode:
@@ -205,6 +210,12 @@ def _scan_all_repos(
         ) as e:
             return (entry.name, "FAILED", e)
         except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
+            log.exception(
+                "unexpected error scanning %s (%s: %s)",
+                entry.name,
+                type(e).__name__,
+                e,
+            )
             return (entry.name, "FAILED", e)
 
     if enabled_entries and concurrency > 1:
