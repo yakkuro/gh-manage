@@ -84,7 +84,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Literal
+from typing import IO, Literal
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 _LOG_LEVELS: dict[LogLevel, int] = {
@@ -98,6 +98,7 @@ _LOG_LEVELS: dict[LogLevel, int] = {
 def configure_logging(
     level: LogLevel = "warning",
     json: bool | None = None,
+    stream: IO[str] | None = None,
 ) -> None:
     """Configure gh_manage's root logger. Idempotent.
 
@@ -106,18 +107,21 @@ def configure_logging(
     - json: if True, emit JSON-line records via python-json-logger.
       If None (default), read GH_MANAGE_LOG_JSON env var (truthy → JSON).
       Cron / agent workflows set GH_MANAGE_LOG_JSON=1; humans don't.
+    - stream: destination for log output. Defaults to sys.stderr.
+      Overridable so unit tests can capture via StringIO without
+      touching real stderr (addresses spec-critique HIGH 1).
 
     Side effect: clears existing handlers on the `gh_manage` logger and
-    replaces them with a single stderr StreamHandler. Callers should
-    invoke this exactly once, at CLI entry.
+    replaces them with a single StreamHandler bound to `stream`.
+    Callers should invoke this exactly once, at CLI entry.
     """
 ```
 
-**Idempotency**: called at CLI entry, the function clears any prior handlers attached to the `gh_manage` logger and adds a single fresh one. This avoids duplicate output if the function is somehow called twice (e.g., a test harness that invokes the CLI group callback).
-
 **Format strings** (frozen):
 - Plain: `"%(asctime)s %(levelname)s %(name)s: %(message)s"` with `datefmt="%Y-%m-%d %H:%M:%S"`.
-- JSON: `pythonjsonlogger.jsonlogger.JsonFormatter` configured to include `timestamp`, `level`, `name`, `message`, plus any extra fields passed via `log.info("msg", extra={"repo": "..."})`.
+- JSON: `pythonjsonlogger.jsonlogger.JsonFormatter` with explicit `datefmt="%Y-%m-%dT%H:%M:%S"` and format string `"%(asctime)s %(levelname)s %(name)s %(message)s"` so the JSON output contains `timestamp`, `level`, `name`, `message` fields plus any `extra={...}` passed by callers. ISO-8601 without microseconds for jq/grep stability (addresses spec-critique MEDIUM #3).
+
+**Idempotency**: called at CLI entry, the function clears any prior handlers attached to the `gh_manage` logger and adds a single fresh one. This avoids duplicate output if the function is somehow called twice (e.g., a test harness that invokes the CLI group callback).
 
 ### 2.2 CLI integration
 
@@ -209,11 +213,11 @@ Agent queries enabled by JSON:
 
 ## §4 — Deviation from "pure additive"
 
-**One behavior change, intentional**: `check_protection` currently swallows `GhNotFoundError` silently (`except GhNotFoundError: current = {}`). After this change, it emits a WARNING log before the swallow. The returned findings and exit code are unchanged; only the log output differs.
+**One intentional behavior change**: `check_protection` currently swallows `GhNotFoundError` silently (`except GhNotFoundError: current = {}`). After this change, it emits a WARNING log before the swallow. The returned findings and exit code are unchanged; only the log output differs.
 
 All other log points are genuinely additive — they sit alongside existing code without altering control flow.
 
-This is called out explicitly so reviewers don't flag it as "scope creep". It's the smallest possible behavior change that makes the GhNotFoundError path debuggable; leaving it silent defeats the purpose of adding logging in the first place.
+Full rationale + risk mitigation in [§7](#7--risks--mitigations) under "Behavior change in `check_protection`".
 
 ## §5 — Testing strategy
 
@@ -237,7 +241,7 @@ Each uses pytest's `caplog` fixture. Tests:
 - `test_resolve_drift_issue_logs_created_event`: mock `issues_api.create_issue` → assert `INFO` record with `"created drift issue"`.
 - `test_resolve_drift_issue_logs_updated_event`: similar.
 - `test_resolve_drift_issue_logs_closed_event`: similar, include the 24h-rule stubbing.
-- `test_worker_logs_exception_with_traceback`: force `_scan_single_repo` to raise `TypeError`; assert `_worker` emits `log.exception` at ERROR with traceback captured (use `caplog.records[-1].exc_info is not None`). **This is the #62 HIGH #5 regression guard.**
+- `test_worker_logs_exception_with_traceback`: patch `gh_manage.commands.drift._scan_single_repo` with `mocker.patch(..., side_effect=TypeError("sentinel"))`; invoke `_worker` directly with a stub `RepoEntry`; assert `caplog.records[-1].levelno == logging.ERROR`, `caplog.records[-1].name == "gh_manage.commands.drift"`, `caplog.records[-1].exc_info is not None`, and `caplog.records[-1].exc_info[0] is TypeError`. **This is the #62 HIGH #5 regression guard.**
 - `test_debug_events_hidden_at_warning_level`: `configure_logging(level="warning")`, run `check_labels` against empty mock, assert no DEBUG records were propagated (verify default quiet behavior).
 
 ### 5.2 Integration verification
@@ -262,10 +266,10 @@ No existing test modifications required. caplog's default propagation behavior m
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| `configure_logging` called before `sys.stderr` is fully initialized (edge case in testing harness) | StreamHandler binds to wrong stream | Accept `stream` parameter defaulting to `sys.stderr`; unit tests can pass a StringIO. |
+| `configure_logging` called before `sys.stderr` is fully initialized (edge case in testing harness) | StreamHandler binds to wrong stream | `configure_logging` accepts a `stream` parameter (default `None` → `sys.stderr` resolved at call time). Unit tests pass a `StringIO`; the signature is part of the contract (§2.1). |
 | `python-json-logger` maintenance lapse | New dep becomes stale | Minor risk — package is stable, last update 2025, low surface area. Pin to `>=2.0,<3.0` initially. |
 | Library consumers (not applicable yet) importing `gh_manage.drift_sync` and inheriting our logger config | Pollution of their log setup | We only configure `gh_manage` logger tree, not root. Library consumers calling into our code will see our `gh_manage.*` loggers propagate to their root — standard Python behavior. If they configure a root handler, output appears there; if not, our handler is silent (only fires when `configure_logging` is called by the CLI entry). |
-| Behavior change in `check_protection` (silent 404 → WARNING) surprises a test | Test fails | Search for existing tests that assert log silence; none exist. caplog + expected-warning tests will cover. |
+| **Behavior change in `check_protection`** (silent 404 → WARNING) surprises a test | Test fails, or users perceive "scope creep" | **Justification**: swallowing `GhNotFoundError` silently defeats the entire point of adding logging — the path that most warrants operational visibility (branch protection absent on a repo we expect it on) is exactly where drift_sync previously emitted no signal. The change is strictly log-side: findings, returned tuples, and exit codes are unchanged. **Coverage**: `test_check_protection_warns_on_not_found` (§5.1) asserts the WARNING; no existing tests assert log silence on this path (verified by grep). **Scope**: this is the ONLY behavior change in the PR; all other logging is additive. Called out in §4 so reviewers can accept it upfront. |
 | Log output on stderr interferes with tests that capture stderr | Test output noise | pytest caplog captures at the logger level, not via stderr capture, so normal test stderr capture is unaffected. |
 | `_worker`'s broad `except Exception` + new `log.exception` duplicates output | Console spam on parallel failures | `log.exception` + the `FAILED ({exc})` user-facing summary are complementary (log is detailed, summary is compact). Accept the minor duplication. |
 
