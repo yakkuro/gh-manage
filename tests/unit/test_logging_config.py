@@ -99,6 +99,6 @@ def test_configure_logging_does_not_add_handler_to_root_logger() -> None:
     root_handlers_before = list(logging.getLogger().handlers)
     configure_logging()
     root_handlers_after = list(logging.getLogger().handlers)
-    assert root_handlers_before == root_handlers_after, (
-        "configure_logging must not touch the root logger — only the `gh_manage` tree."
-    )
+    assert (
+        root_handlers_before == root_handlers_after
+    ), "configure_logging must not touch the root logger — only the `gh_manage` tree."
