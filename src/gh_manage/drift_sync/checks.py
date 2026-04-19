@@ -15,6 +15,7 @@ with unittest.mock.patch affects every caller. See spec §4 Option P1.
 from __future__ import annotations
 
 import hashlib
+import logging
 from importlib.resources import files as _package_files
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from gh_manage.github_api import protection as protection_api
 from gh_manage.github_client import GhNotFoundError
 from gh_manage.labels_sync import compute_diff as _compute_labels_diff
 from gh_manage.protection_sync import compute_protection_diff
+
+log = logging.getLogger(__name__)
 
 
 @register_check
@@ -48,6 +51,7 @@ def check_labels(ctx: ScanContext) -> tuple[Finding, ...]:
     can see extras, and the adapter marks them low-severity with no
     remediation command.
     """
+    log.debug("fetching labels for %s", ctx.repo)
     current = labels_api.list_labels(ctx.repo)
     diff = _compute_labels_diff(current, ctx.labels_config, prune=True)
     return _labels_diff_to_findings(diff, ctx.repo)
@@ -80,6 +84,11 @@ def check_protection(ctx: ScanContext) -> tuple[Finding, ...]:
     try:
         current = protection_api.get_branch_protection(ctx.repo, ctx.default_branch)
     except GhNotFoundError:
+        log.warning(
+            "branch protection not configured on %s@%s; treating as empty",
+            ctx.repo,
+            ctx.default_branch,
+        )
         current = {}
 
     diff = compute_protection_diff(current, policy, ctx.profile, ctx.default_branch)
@@ -98,6 +107,9 @@ def _read_template_content(source: str) -> str:
     try:
         return template_path.read_text(encoding="utf-8")
     except OSError as e:
+        log.error(
+            "failed to read bundled template %r at %s: %s", source, template_path, e
+        )
         raise DriftError(
             f"Cannot read bundled template {source!r} at {template_path}: {e}. "
             f"This may indicate a packaging bug — the template should be "
