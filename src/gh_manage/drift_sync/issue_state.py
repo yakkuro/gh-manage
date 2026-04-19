@@ -7,6 +7,7 @@ Top of the drift_sync DAG.
 
 from __future__ import annotations
 
+import logging
 import re as _re
 from datetime import datetime, timedelta
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 from gh_manage.drift_sync.formatters import format_issue_body, format_issue_comment
 from gh_manage.findings import Finding
 from gh_manage.github_api import issues as issues_api
+
+log = logging.getLogger(__name__)
 
 _ZERO_FINDINGS_RE = _re.compile(r"<!-- scan:zero-findings:(\S+) -->")
 
@@ -25,7 +28,7 @@ def parse_zero_findings_timestamps(
 
     Returns a list of datetime objects (newest first, matching the
     comment order from get_issue_comments which returns newest first).
-    Malformed timestamps are silently skipped.
+    Malformed timestamps are logged at WARNING and skipped.
     """
     timestamps: list[datetime] = []
     for comment in comments:
@@ -35,8 +38,12 @@ def parse_zero_findings_timestamps(
             try:
                 ts = datetime.fromisoformat(match.group(1))
                 timestamps.append(ts)
-            except ValueError:
-                # Malformed timestamp — skip
+            except ValueError as e:
+                log.warning(
+                    "malformed zero-findings timestamp %r skipped: %s",
+                    match.group(1),
+                    e,
+                )
                 continue
     return timestamps
 
@@ -85,6 +92,12 @@ def resolve_drift_issue(
         title = _DRIFT_ISSUE_TITLE_TEMPLATE.format(repo=repo)
         issue = issues_api.create_issue(repo, title, body, [_DRIFT_LABEL])
         issues_api.add_issue_comment(repo, issue["number"], comment)
+        log.info(
+            "created drift issue #%d on %s (%d findings)",
+            issue["number"],
+            repo,
+            len(findings),
+        )
         return f"Created issue #{issue['number']} on {repo} ({len(findings)} findings)"
 
     issue_number = existing["number"]
@@ -107,6 +120,17 @@ def resolve_drift_issue(
                 f"Zero drift detected on 2 consecutive scans ≥24h apart. "
                 f"If drift recurs, a new Issue will be created.",
             )
+            log.info(
+                "closed drift issue #%d on %s (24h zero-drift rule)",
+                issue_number,
+                repo,
+            )
             return f"Closed issue #{issue_number} on {repo} (zero drift, 24h rule satisfied)"
 
+    log.info(
+        "updated drift issue #%d on %s (%d findings)",
+        issue_number,
+        repo,
+        len(findings),
+    )
     return f"Updated issue #{issue_number} on {repo} ({len(findings)} findings)"
