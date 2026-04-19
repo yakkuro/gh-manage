@@ -1,6 +1,6 @@
 [project]
 name = "gh-manage"
-version = "1.7.0"
+version = "1.8.0"
 description = "GitHub-based CI/CD, Issue management, and operational system for yakkuro/* repositories."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "click>=8.1,<9",
     "pydantic>=2.5,<3",
+    "python-json-logger>=2.0,<3",
     "pyyaml>=6.0,<7",
 ]
 
