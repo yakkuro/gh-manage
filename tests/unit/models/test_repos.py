@@ -201,6 +201,48 @@ def test_bundled_ts_ci_template_loadable() -> None:
         f"ts-ci.yml pins {tag!r} which looks like a CLI tag. "
         "Consumers resolve workflow-track tags (vX.Y.Z). Use v1.1.0 or newer."
     )
-    assert (
-        pr_gate["with"]["gh-manage-ref"] == tag
-    ), "gh-manage-ref must match the @<tag> in `uses:`."
+    assert pr_gate["with"]["gh-manage-ref"] == tag, (
+        "gh-manage-ref must match the @<tag> in `uses:`."
+    )
+
+
+def test_repo_entry_self_referencing_defaults_false() -> None:
+    e = RepoEntry(name="yakkuro/foo", profile="python-service")
+    assert e.self_referencing is False
+
+
+def test_repo_entry_self_referencing_true() -> None:
+    e = RepoEntry(
+        name="yakkuro/gh-manage",
+        profile="python-service",
+        self_referencing=True,
+    )
+    assert e.self_referencing is True
+
+
+def test_repo_entry_self_referencing_rejects_non_bool() -> None:
+    # Pydantic coerces "true"/"false" strings — make sure that still works
+    # for YAML compat, but reject obviously-wrong types.
+    with pytest.raises(ValidationError):
+        RepoEntry(
+            name="yakkuro/foo",
+            profile="python-service",
+            self_referencing=["yes"],  # type: ignore[arg-type]
+        )
+
+
+def test_bundled_repos_yml_marks_gh_manage_self_referencing() -> None:
+    """Regression guard: gh-manage entry must stay marked self_referencing
+    so the drift scanner skips its self-hosted ci.yml."""
+    repos_path = Path(str(files("gh_manage.data") / "repos.yml"))
+    config = load_config(repos_path, ReposConfig)
+    by_name = {e.name: e for e in config.repos}
+    assert by_name["yakkuro/gh-manage"].self_referencing is True
+    # All other repos should remain self_referencing=False (no other
+    # self-hosted reusable publishers as of this PR).
+    for name, entry in by_name.items():
+        if name != "yakkuro/gh-manage":
+            assert entry.self_referencing is False, (
+                f"Unexpected self_referencing=True on {name}; "
+                "only gh-manage should opt in."
+            )
