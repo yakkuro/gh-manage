@@ -7,8 +7,9 @@ import stat
 
 import click
 import pytest
+from click.testing import CliRunner
 
-from gh_manage.cli import _validate_log_file
+from gh_manage.cli import _validate_log_file, main
 
 
 def test_validate_log_file_rejects_missing_parent(tmp_path):
@@ -47,20 +48,15 @@ def test_validate_log_file_accepts_existing_path(tmp_path):
 
 # ---- CLI integration tests (Task 5) ----
 
-from click.testing import CliRunner
-
-from gh_manage.cli import main
-
 
 def test_cli_log_file_env_var_honored(tmp_path, monkeypatch):
     log_path = tmp_path / "x.log"
     monkeypatch.setenv("GH_MANAGE_LOG_FILE", str(log_path))
     runner = CliRunner()
-    # Invoke a subcommand (without required args, so it fails) to trigger the
-    # root callback. The root callback runs before subcommand dispatch.
-    result = runner.invoke(main, ["labels"], env={"GH_MANAGE_LOG_FILE": str(log_path)})
-    # We don't care if the subcommand succeeds; we just want the callback to run.
-    # _validate_log_file touched the file via open("a").
+    # Invoke a subcommand (no required args → subcommand fails) to trigger the
+    # root callback. The root callback runs before subcommand dispatch, which
+    # is enough to touch the log file via _validate_log_file.
+    runner.invoke(main, ["labels"], env={"GH_MANAGE_LOG_FILE": str(log_path)})
     assert log_path.exists()
 
 
