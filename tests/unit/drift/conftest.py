@@ -60,6 +60,7 @@ class DriftScenario(BaseModel):
     profile: str
     inputs: ScenarioInputs
     expected_findings: list[ExpectedFinding]
+    self_referencing: bool = False
 
 
 _SCENARIO_ROOT = Path(__file__).parent.parent.parent / "fixtures" / "drift-scenarios"

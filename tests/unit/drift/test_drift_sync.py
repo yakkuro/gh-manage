@@ -451,6 +451,7 @@ def test_scenario(
         profile=profile,
         labels_config=labels_config,
         bp_config=bp_config,
+        self_referencing=scenario.self_referencing,
     )
 
     findings = check_fn(ctx)
