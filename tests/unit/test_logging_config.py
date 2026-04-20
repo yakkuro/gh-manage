@@ -30,13 +30,11 @@ def _reset_gh_manage_logger():
 
 
 def test_configure_logging_default_level_is_warning() -> None:
-
     configure_logging()
     assert logging.getLogger("gh_manage").level == logging.WARNING
 
 
 def test_configure_logging_sets_explicit_level() -> None:
-
     configure_logging(level="info")
     assert logging.getLogger("gh_manage").level == logging.INFO
 
@@ -73,7 +71,6 @@ def test_configure_logging_json_explicit_arg_overrides_env(
 
 
 def test_configure_logging_idempotent() -> None:
-
     configure_logging(level="info")
     configure_logging(level="debug")
     gh_logger = logging.getLogger("gh_manage")
@@ -91,13 +88,12 @@ def test_configure_logging_writes_to_stream_argument() -> None:
 
 
 def test_configure_logging_does_not_add_handler_to_root_logger() -> None:
-
     root_handlers_before = list(logging.getLogger().handlers)
     configure_logging()
     root_handlers_after = list(logging.getLogger().handlers)
-    assert root_handlers_before == root_handlers_after, (
-        "configure_logging must not touch the root logger — only the `gh_manage` tree."
-    )
+    assert (
+        root_handlers_before == root_handlers_after
+    ), "configure_logging must not touch the root logger — only the `gh_manage` tree."
 
 
 def test_configure_logging_sets_propagate_false() -> None:
