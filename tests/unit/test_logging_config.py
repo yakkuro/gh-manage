@@ -150,3 +150,62 @@ def test_plain_formatter_omits_scan_id():
     finally:
         scan_id_var.reset(token)
     assert "would-be-visible" not in stream.getvalue()
+
+
+# ---- log_file + dual handler tests (cli/v1.9.0) ----
+
+
+def test_configure_logging_with_log_file_adds_file_handler(tmp_path):
+    log_path = tmp_path / "x.log"
+    configure_logging(level="info", log_file=log_path)
+    handlers = logging.getLogger("gh_manage").handlers
+    assert len(handlers) == 2
+    types = {type(h).__name__ for h in handlers}
+    assert types == {"StreamHandler", "FileHandler"}
+
+
+def test_log_file_mode_is_append(tmp_path):
+    log_path = tmp_path / "x.log"
+    log_path.write_text("pre-existing\n", encoding="utf-8")
+    configure_logging(level="info", log_file=log_path)
+    logging.getLogger("gh_manage.test").info("new-entry")
+    for h in logging.getLogger("gh_manage").handlers:
+        h.flush()
+    content = log_path.read_text(encoding="utf-8")
+    assert content.startswith("pre-existing\n")
+    assert "new-entry" in content
+
+
+def test_log_file_encoding_is_utf8(tmp_path):
+    log_path = tmp_path / "x.log"
+    configure_logging(level="info", log_file=log_path)
+    logging.getLogger("gh_manage.test").info("日本語テスト")
+    for h in logging.getLogger("gh_manage").handlers:
+        h.flush()
+    content = log_path.read_bytes().decode("utf-8")
+    assert "日本語テスト" in content
+
+
+def test_log_file_and_stderr_get_same_record(tmp_path):
+    log_path = tmp_path / "x.log"
+    stream = io.StringIO()
+    configure_logging(level="info", log_file=log_path, stream=stream)
+    logging.getLogger("gh_manage.test").info("dual-msg")
+    for h in logging.getLogger("gh_manage").handlers:
+        h.flush()
+    assert "dual-msg" in stream.getvalue()
+    assert "dual-msg" in log_path.read_text(encoding="utf-8")
+
+
+def test_file_handler_inherits_scan_id_formatter(tmp_path):
+    log_path = tmp_path / "x.log"
+    configure_logging(level="info", json=True, log_file=log_path)
+    token = scan_id_var.set("file-scan-id")
+    try:
+        logging.getLogger("gh_manage.test").info("msg")
+    finally:
+        scan_id_var.reset(token)
+    for h in logging.getLogger("gh_manage").handlers:
+        h.flush()
+    first_line = log_path.read_text(encoding="utf-8").splitlines()[0]
+    assert json.loads(first_line)["scan_id"] == "file-scan-id"
