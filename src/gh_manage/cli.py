@@ -61,10 +61,23 @@ def _validate_log_file(path: Path) -> None:
         "GH_MANAGE_LOG_LEVEL. For JSON output, set GH_MANAGE_LOG_JSON=1."
     ),
 )
-def main(log_level: str) -> None:
+@click.option(
+    "--log-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    envvar="GH_MANAGE_LOG_FILE",
+    default=None,
+    help=(
+        "Write logs to this file in addition to stderr. Also honours "
+        "GH_MANAGE_LOG_FILE. Parent directory must exist and be writable; "
+        "otherwise the command exits with a usage error."
+    ),
+)
+def main(log_level: str, log_file: Path | None) -> None:
     """Root command group. Subcommands are registered below."""
     level: LogLevel = log_level.lower()  # type: ignore[assignment]
-    configure_logging(level=level)
+    if log_file is not None:
+        _validate_log_file(log_file)
+    configure_logging(level=level, log_file=log_file)
 
 
 main.add_command(init_cmd.init)

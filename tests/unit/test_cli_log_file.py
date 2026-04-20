@@ -43,3 +43,44 @@ def test_validate_log_file_accepts_existing_path(tmp_path):
     target.write_text("pre-existing content\n", encoding="utf-8")
     _validate_log_file(target)
     assert target.read_text(encoding="utf-8") == "pre-existing content\n"
+
+
+# ---- CLI integration tests (Task 5) ----
+
+from click.testing import CliRunner
+
+from gh_manage.cli import main
+
+
+def test_cli_log_file_env_var_honored(tmp_path, monkeypatch):
+    log_path = tmp_path / "x.log"
+    monkeypatch.setenv("GH_MANAGE_LOG_FILE", str(log_path))
+    runner = CliRunner()
+    # Invoke a subcommand (without required args, so it fails) to trigger the
+    # root callback. The root callback runs before subcommand dispatch.
+    result = runner.invoke(main, ["labels"], env={"GH_MANAGE_LOG_FILE": str(log_path)})
+    # We don't care if the subcommand succeeds; we just want the callback to run.
+    # _validate_log_file touched the file via open("a").
+    assert log_path.exists()
+
+
+def test_cli_log_file_rejects_bad_path(tmp_path):
+    bad = tmp_path / "nonexistent-parent" / "x.log"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["--log-file", str(bad), "labels", "show", "owner/repo"],
+    )
+    assert result.exit_code != 0
+    combined = result.output + (str(result.exception) if result.exception else "")
+    assert "parent directory does not exist" in combined
+
+
+def test_cli_log_file_env_var_rejects_bad_path(tmp_path, monkeypatch):
+    bad = tmp_path / "nonexistent-parent" / "x.log"
+    monkeypatch.setenv("GH_MANAGE_LOG_FILE", str(bad))
+    runner = CliRunner()
+    result = runner.invoke(main, ["labels", "show", "owner/repo"])
+    assert result.exit_code != 0
+    combined = result.output + (str(result.exception) if result.exception else "")
+    assert "parent directory does not exist" in combined
