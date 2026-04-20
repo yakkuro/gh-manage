@@ -31,7 +31,13 @@ from gh_manage import git_cli
 from gh_manage.config import load_config
 from gh_manage.findings import Finding
 from gh_manage.github_api import protection as protection_api
-from gh_manage.github_client import GhError, GhNotFoundError, run_gh_api
+from gh_manage.github_client import (
+    GhAuthError,
+    GhError,
+    GhNotFoundError,
+    GhPermissionError,
+    run_gh_api,
+)
 from gh_manage.models.profiles import ProfileSpec
 from gh_manage.models.repos import ReposConfig
 
@@ -109,13 +115,32 @@ def _resolve_profile_required_contexts(profile: ProfileSpec) -> tuple[str, ...]:
     return tuple(getattr(profile, "required_contexts", ()) or ())
 
 
-def _resolve_live_required_contexts(repo: str, default_branch: str) -> tuple[str, ...]:
+def _resolve_live_required_contexts(
+    repo: str, default_branch: str
+) -> tuple[str, ...] | None:
+    """Return the live required_status_checks.contexts list, or None if
+    we could not read it (auth / permission failure).
+
+    Distinguishes three cases so checks can react appropriately:
+      - dict payload with a contexts list → `tuple(contexts)` (may be empty)
+      - GhNotFoundError (404) → `()`  (protection exists but no contexts)
+      - GhAuthError / GhPermissionError → `None` (state unknown)
+      - any other GhError → `None` (defensive — treat as unknown rather
+        than fabricate an empty list, which would surface as spurious
+        HIGH/CRITICAL findings under shape/* checks)
+
+    Callers must treat None as "skip live-vs-profile comparisons".
+    """
     try:
         payload = protection_api.get_branch_protection(repo, default_branch)
+    except GhNotFoundError:
+        return ()
+    except (GhAuthError, GhPermissionError):
+        return None
     except GhError:
-        return ()
+        return None
     if not isinstance(payload, dict):
-        return ()
+        return None
     rsc = payload.get("required_status_checks") or {}
     contexts = rsc.get("contexts") or []
     return tuple(contexts)
@@ -144,11 +169,13 @@ def run_on_path(path: Path, profile_name: str | None = None) -> tuple[Finding, .
     profile = _load_profile(profile_name)
     ci_yml_text = _read_local_ci_yml(path)
     live_ctx = _resolve_live_required_contexts(repo, "main")
+    readable = live_ctx is not None
     ctx = CheckContext(
         repo=repo,
         ci_yml_text=ci_yml_text,
         profile_name=profile_name,
-        required_contexts=live_ctx,
+        required_contexts=live_ctx or (),
+        required_contexts_readable=readable,
         profile_required_contexts=_resolve_profile_required_contexts(profile),
         source_hint=str(path),
     )
@@ -161,11 +188,13 @@ def run_on_remote(repo: str, profile_name: str | None = None) -> tuple[Finding, 
     profile = _load_profile(profile_name)
     ci_yml_text = _fetch_remote_ci_yml(repo)
     live_ctx = _resolve_live_required_contexts(repo, "main")
+    readable = live_ctx is not None
     ctx = CheckContext(
         repo=repo,
         ci_yml_text=ci_yml_text,
         profile_name=profile_name,
-        required_contexts=live_ctx,
+        required_contexts=live_ctx or (),
+        required_contexts_readable=readable,
         profile_required_contexts=_resolve_profile_required_contexts(profile),
         source_hint=f"remote:{repo}",
     )

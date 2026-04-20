@@ -40,7 +40,12 @@ from gh_manage.drift_sync import (
 from gh_manage.git_cli import GitError
 from gh_manage.github_api import protection as protection_api
 from gh_manage.github_api import repo_info
-from gh_manage.github_client import GhError, GhNotFoundError
+from gh_manage.github_client import (
+    GhAuthError,
+    GhError,
+    GhNotFoundError,
+    GhPermissionError,
+)
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
@@ -120,18 +125,29 @@ def _scan_single_repo(
         # `shape/required-contexts-match` check reported every
         # profile-declared context as "missing" on every repo — a
         # silent false-HIGH across the fleet.
+        #
+        # Auth/permission errors are materialized as
+        # `live_required_contexts_readable=False` so the bridged shape
+        # checks can skip comparisons when the state is genuinely
+        # unknown (distinguishing from "404, no protection at all").
         live_contexts: tuple[str, ...] = ()
+        live_readable: bool = True
         if profile.protection_policy is not None:
             try:
                 live_protection = protection_api.get_branch_protection(
                     owner_repo, default_branch
                 )
+                live_contexts = tuple(
+                    live_protection.get("required_status_checks", {}).get(
+                        "contexts", []
+                    )
+                    or []
+                )
             except GhNotFoundError:
-                live_protection = {}
-            live_contexts = tuple(
-                live_protection.get("required_status_checks", {}).get("contexts", [])
-                or []
-            )
+                # Protection genuinely absent → readable, contexts are ().
+                pass
+            except (GhAuthError, GhPermissionError):
+                live_readable = False
 
         ctx = ScanContext(
             path=scan_path,
@@ -141,6 +157,7 @@ def _scan_single_repo(
             labels_config=labels_config,
             bp_config=bp_config,
             live_required_contexts=live_contexts,
+            live_required_contexts_readable=live_readable,
         )
 
         all_findings = drift_sync.run_all_checks(ctx)

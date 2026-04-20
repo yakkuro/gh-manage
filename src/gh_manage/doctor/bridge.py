@@ -44,6 +44,7 @@ def _build_check_context(ctx: ScanContext) -> CheckContext:
         ci_yml_text=ci_text,
         profile_name=profile_name,
         required_contexts=ctx.live_required_contexts,
+        required_contexts_readable=ctx.live_required_contexts_readable,
         profile_required_contexts=profile_required,
         source_hint=f"scan:{ctx.repo}",
     )

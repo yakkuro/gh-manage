@@ -16,10 +16,21 @@ from gh_manage.doctor.registry import register_check
 from gh_manage.findings import Finding
 
 # A job is a "reusable-pr-gate job" iff its `uses:` value matches this
-# regex. Indirection via another composite workflow is NOT traced.
+# regex. Two forms are accepted:
+#
+#   1. Remote pinned (the common case for every consumer of gh-manage):
+#      `yakkuro/gh-manage/.github/workflows/reusable-pr-gate-<lang>.yml@<ref>`
+#
+#   2. Local relative (the self-dogfood case — gh-manage's own ci.yml):
+#      `./.github/workflows/reusable-pr-gate-<lang>.yml`
+#
+# Indirection via another composite workflow is NOT traced.
 _REUSABLE_USES_RE = re.compile(
-    r"^yakkuro/gh-manage/\.github/workflows/"
-    r"reusable-pr-gate-(python|typescript)\.yml@.+$"
+    r"^(?:"
+    r"yakkuro/gh-manage/\.github/workflows/reusable-pr-gate-(?:python|typescript)\.yml@.+"
+    r"|"
+    r"\./\.github/workflows/reusable-pr-gate-(?:python|typescript)\.yml"
+    r")$"
 )
 
 
@@ -55,7 +66,33 @@ def _iter_reusable_jobs(ci_yml: dict):
 @register_check("shape/job-shape-coherence")
 def check_job_shape_coherence(ctx: CheckContext) -> tuple[Finding, ...]:
     """critical: produced status context must match protection's
-    required context. Spec §3 check 1."""
+    required context. Spec §3 check 1.
+
+    Skipped entirely when `required_contexts_readable` is False (e.g.,
+    CI runner lacks scope to read branch protection). Without a known
+    required set, any produced-vs-required comparison would surface
+    spurious CRITICALs. A separate LOW diagnostic surfaces the skip.
+    """
+    if not ctx.required_contexts_readable:
+        return (
+            Finding(
+                severity="low",
+                check="shape/job-shape-coherence",
+                repo=ctx.repo,
+                field_path="branches/*/protection:required_status_checks",
+                current_value="unreadable",
+                desired_value="readable",
+                message=(
+                    "Could not read live branch protection for "
+                    f"{ctx.repo}; shape/job-shape-coherence skipped. "
+                    "Ensure the caller has admin read access."
+                ),
+                remediation=(
+                    "Re-run with a token/user that has Administration:Read "
+                    f"permission on {ctx.repo}."
+                ),
+            ),
+        )
     ci_yml = _parse_ci_yml(ctx.ci_yml_text, ctx.source_hint)
     findings: list[Finding] = []
     required_set = set(ctx.required_contexts)
@@ -141,7 +178,12 @@ def check_required_contexts_match(ctx: CheckContext) -> tuple[Finding, ...]:
     Extra (protection enforces, profile doesn't declare): severity medium.
 
     Spec §3 check 3.
+
+    Skipped entirely when `required_contexts_readable` is False — a
+    diff against unknown state would surface spurious HIGH findings.
     """
+    if not ctx.required_contexts_readable:
+        return ()
     expected = set(ctx.profile_required_contexts)
     actual = set(ctx.required_contexts)
     findings: list[Finding] = []

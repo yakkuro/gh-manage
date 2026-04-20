@@ -19,6 +19,14 @@ class CheckContext:
     required_contexts
         Tuple of status-check contexts required by the target repo's
         branch-protection policy on the default branch.
+    required_contexts_readable
+        True when `required_contexts` reflects the actual live
+        protection state. False when the protection API call failed
+        (e.g., auth/permission error — CI default GITHUB_TOKEN cannot
+        read branch protection). Shape checks that compare produced
+        vs required contexts must skip when False, to avoid surfacing
+        spurious CRITICAL/HIGH findings for "mismatch with unknown
+        state". Default True (most callers have authenticated access).
     profile_required_contexts
         Tuple of status-check contexts declared required by the
         bundled profile. Compared against `required_contexts` (the
@@ -34,3 +42,4 @@ class CheckContext:
     required_contexts: tuple[str, ...]
     profile_required_contexts: tuple[str, ...] = ()
     source_hint: str = "unknown"
+    required_contexts_readable: bool = True
