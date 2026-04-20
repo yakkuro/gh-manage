@@ -38,8 +38,9 @@ from gh_manage.drift_sync import (
     ScanContext,
 )
 from gh_manage.git_cli import GitError
+from gh_manage.github_api import protection as protection_api
 from gh_manage.github_api import repo_info
-from gh_manage.github_client import GhError
+from gh_manage.github_client import GhError, GhNotFoundError
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
@@ -113,6 +114,25 @@ def _scan_single_repo(
         else:
             scan_path = Path.cwd().resolve()
 
+        # Fetch live branch-protection contexts up-front so the shape
+        # check can compare profile-declared `required_contexts` against
+        # reality. Previously this was left empty and the
+        # `shape/required-contexts-match` check reported every
+        # profile-declared context as "missing" on every repo — a
+        # silent false-HIGH across the fleet.
+        live_contexts: tuple[str, ...] = ()
+        if profile.protection_policy is not None:
+            try:
+                live_protection = protection_api.get_branch_protection(
+                    owner_repo, default_branch
+                )
+            except GhNotFoundError:
+                live_protection = {}
+            live_contexts = tuple(
+                live_protection.get("required_status_checks", {}).get("contexts", [])
+                or []
+            )
+
         ctx = ScanContext(
             path=scan_path,
             repo=owner_repo,
@@ -120,6 +140,7 @@ def _scan_single_repo(
             profile=profile,
             labels_config=labels_config,
             bp_config=bp_config,
+            live_required_contexts=live_contexts,
         )
 
         all_findings = drift_sync.run_all_checks(ctx)

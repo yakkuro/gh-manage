@@ -23,6 +23,14 @@ def _patch_git_and_repo(
         "gh_manage.commands.drift.repo_info.get_default_branch",
         return_value="main",
     )
+    # Stub the live-protection fetch that _scan_single_repo performs when
+    # the profile declares a protection_policy. Tests that need a specific
+    # `live_required_contexts` value can re-patch this mock after calling
+    # _patch_git_and_repo.
+    mocker.patch(
+        "gh_manage.commands.drift.protection_api.get_branch_protection",
+        return_value={},
+    )
 
 
 def _patch_run_all_checks(mocker: MockerFixture, findings: tuple[Finding, ...]) -> None:
