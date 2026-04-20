@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -25,6 +26,8 @@ from gh_manage.github_client import GhNotFoundError
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
+
+log = logging.getLogger(__name__)
 
 
 @click.command(
@@ -77,6 +80,13 @@ def init(
     # Precheck: derive owner/repo from origin remote
     owner_repo = git_cli.get_origin_owner_repo(target)
 
+    log.info(
+        "init invoked: repo=%s profile=%s apply=%s",
+        owner_repo,
+        profile_name,
+        apply_flag,
+    )
+
     # Load profile from package data
     profile_path = resolve_profile_path(profile_name)
     profile = load_config(profile_path, ProfileSpec)
@@ -117,6 +127,10 @@ def init(
                 owner_repo, "main"
             )
         except GhNotFoundError:
+            log.warning(
+                "branch protection not configured on %s@main; treating as empty",
+                owner_repo,
+            )
             current_protection = {}
         protection_diff = protection_sync.compute_protection_diff(
             current_protection, policy, profile, "main"
@@ -198,6 +212,11 @@ def init(
     findings = doctor_pkg.run_on_path(target, profile_name=profile_name)
     critical = tuple(f for f in findings if f.severity == "critical")
     if critical:
+        log.warning(
+            "init aborting: critical doctor findings=%d, rolling back %d file(s)",
+            len(critical),
+            len(created_paths),
+        )
         click.echo("", err=True)
         click.echo("init post-check found critical findings:", err=True)
         click.echo(
@@ -210,6 +229,11 @@ def init(
                 if p.is_file():
                     p.unlink()
             except OSError as roll_err:
+                log.warning(
+                    "init rollback: cannot delete %s: %s",
+                    p,
+                    roll_err,
+                )
                 failed_deletes.append((p, roll_err))
         if failed_deletes:
             click.echo("", err=True)
@@ -230,6 +254,16 @@ def init(
             "files. See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
         )
 
+    n_protection_changes_final = (
+        len(protection_diff.changes) if protection_diff is not None else 0
+    )
+    log.info(
+        "init complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d",
+        owner_repo,
+        len(files_diff.creates) + len(files_diff.overwrites),
+        labels_diff.total_changes,
+        n_protection_changes_final,
+    )
     click.echo("\nDone. Next steps:")
     click.echo("  git status                # review what gh-manage placed")
     click.echo("  git add <gh-manage paths> # stage only the new files")
