@@ -37,6 +37,7 @@ from gh_manage.drift_sync.context import (  # noqa: F401
     DriftError,
     DriftOutputError,
     ScanContext,
+    scan_id_var,
 )
 
 # ---- Registry (drift_sync.registry) ----
@@ -104,6 +105,7 @@ __all__ = [
     "ScanContext",
     "DriftError",
     "DriftOutputError",
+    "scan_id_var",
     # Registry
     "CheckFn",
     "register_check",

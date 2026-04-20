@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from gh_manage import __version__
@@ -15,6 +17,29 @@ from gh_manage.commands import (
     protection as protection_cmd,
 )
 from gh_manage.logging_config import LogLevel, configure_logging
+
+
+def _validate_log_file(path: Path) -> None:
+    """Raise UsageError if the log file cannot be written to.
+
+    Runs at CLI startup, before any subcommand. Rejects missing parent
+    directory and write-permission failures with actionable messages.
+    Creating the file (0-byte touch via append-open) is intentional —
+    users who pass --log-file have opted into file creation.
+    """
+    parent = path.parent.resolve()
+    if not parent.is_dir():
+        raise click.UsageError(
+            f"--log-file parent directory does not exist: {parent}. "
+            f"Create it or choose a different path."
+        )
+    try:
+        with path.open("a", encoding="utf-8"):
+            pass
+    except OSError as e:
+        raise click.UsageError(
+            f"Cannot write to --log-file {path}: {e}. Check permissions and disk space."
+        ) from e
 
 
 @click.group(
@@ -36,10 +61,23 @@ from gh_manage.logging_config import LogLevel, configure_logging
         "GH_MANAGE_LOG_LEVEL. For JSON output, set GH_MANAGE_LOG_JSON=1."
     ),
 )
-def main(log_level: str) -> None:
+@click.option(
+    "--log-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    envvar="GH_MANAGE_LOG_FILE",
+    default=None,
+    help=(
+        "Write logs to this file in addition to stderr. Also honours "
+        "GH_MANAGE_LOG_FILE. Parent directory must exist and be writable; "
+        "otherwise the command exits with a usage error."
+    ),
+)
+def main(log_level: str, log_file: Path | None) -> None:
     """Root command group. Subcommands are registered below."""
     level: LogLevel = log_level.lower()  # type: ignore[assignment]
-    configure_logging(level=level)
+    if log_file is not None:
+        _validate_log_file(log_file)
+    configure_logging(level=level, log_file=log_file)
 
 
 main.add_command(init_cmd.init)

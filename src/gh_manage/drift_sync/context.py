@@ -7,6 +7,7 @@ submodules are allowed to import from here.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,3 +50,10 @@ class DriftError(Exception):
 class DriftOutputError(DriftError):
     """Failed to write the drift report to --output <path>. Wraps the
     underlying OSError with an actionable message."""
+
+
+# Per-scan correlation id. Set at the entry of _scan_single_repo
+# (commands/drift.py) and reset on exit. Default empty string means
+# "not inside a scan" — the JSON formatter skips the field in that case.
+# See docs/specs/2026-04-20-structured-logging-followups-design.md §2.
+scan_id_var: ContextVar[str] = ContextVar("scan_id", default="")

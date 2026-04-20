@@ -17,9 +17,13 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import IO, Literal
 
-from pythonjsonlogger.jsonlogger import JsonFormatter
+from pythonjsonlogger.jsonlogger import JsonFormatter as _BaseJsonFormatter
+
+from gh_manage.drift_sync.context import scan_id_var
+
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 
@@ -38,6 +42,21 @@ _JSON_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 _TRUTHY = {"1", "true", "yes"}
 
 
+class _ScanIdJsonFormatter(_BaseJsonFormatter):
+    """JSON formatter that injects the current scan_id ContextVar.
+
+    When called outside a drift scan, scan_id_var.get() returns the
+    default empty string, and the field is omitted from the JSON
+    output. See docs/specs/2026-04-20-structured-logging-followups-design.md §2.
+    """
+
+    def add_fields(self, log_record, record, message_dict):
+        super().add_fields(log_record, record, message_dict)
+        sid = scan_id_var.get()
+        if sid:
+            log_record["scan_id"] = sid
+
+
 def _env_says_json() -> bool:
     raw = os.environ.get("GH_MANAGE_LOG_JSON", "").strip().lower()
     return raw in _TRUTHY
@@ -47,28 +66,31 @@ def configure_logging(
     level: LogLevel = "warning",
     json: bool | None = None,
     stream: IO[str] | None = None,
+    log_file: Path | None = None,
 ) -> None:
-    """Configure gh_manage's root logger tree. Idempotent.
+    """Configure gh_manage's root logger tree.
+
+    Handler-replacement semantics (not merge-idempotent across
+    differing args): each call replaces the existing handler list on
+    the `gh_manage` logger with a fresh set built from the arguments.
+    Calling twice with the same arguments produces the same resulting
+    configuration (end-state idempotent), but calling twice with
+    different log_file values does NOT merge — the second call
+    replaces the first. The CLI invokes this exactly once per process.
 
     - level: log level for the `gh_manage` logger tree. Third-party
       packages' loggers are untouched.
-    - json: tri-state. Precedence: explicit `json=True/False` wins
-      over env var. If `json is None` (default), read
-      `GH_MANAGE_LOG_JSON` env var; truthy values ("1", "true", "yes",
-      case-insensitive) → JSON, everything else → plain.
-    - stream: destination for log output. Defaults to sys.stderr.
-      Production callers (cli.py) should omit this argument. Unit
-      tests pass a StringIO to capture output without touching real
-      stderr.
-
-    Side effect: clears existing handlers on the `gh_manage` logger and
-    replaces them with a single StreamHandler bound to `stream`.
-    Callers should invoke this exactly once, at CLI entry.
+    - json: tri-state. Explicit True/False wins over env var
+      GH_MANAGE_LOG_JSON; None reads env.
+    - stream: destination for stderr handler. Defaults to sys.stderr.
+      Tests pass a StringIO to capture output.
+    - log_file: optional destination for a FileHandler (append mode,
+      utf-8). When set, a FileHandler is added alongside the stderr
+      StreamHandler; both handlers share the same formatter. Caller is
+      responsible for validating the path (cli.py uses _validate_log_file).
 
     Immutability: the plain and JSON formatter strings (including
     datefmt) are fixed by this module — not runtime-configurable.
-    Changing them requires editing logging_config.py, so caplog-based
-    tests can rely on the record shape.
     """
     if json is None:
         json = _env_says_json()
@@ -78,17 +100,17 @@ def configure_logging(
 
     formatter: logging.Formatter
     if json:
-        formatter = JsonFormatter(_JSON_FORMAT, datefmt=_JSON_DATEFMT)
+        formatter = _ScanIdJsonFormatter(_JSON_FORMAT, datefmt=_JSON_DATEFMT)
     else:
         formatter = logging.Formatter(_PLAIN_FORMAT, datefmt=_PLAIN_DATEFMT)
 
-    handler = logging.StreamHandler(stream=stream)
-    handler.setFormatter(formatter)
+    handlers: list[logging.Handler] = [logging.StreamHandler(stream=stream)]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(str(log_file), mode="a", encoding="utf-8"))
+    for h in handlers:
+        h.setFormatter(formatter)
 
     gh_logger = logging.getLogger("gh_manage")
-    # Drop prior handlers so repeat calls (idempotent contract) don't stack.
-    gh_logger.handlers[:] = [handler]
+    gh_logger.handlers[:] = handlers
     gh_logger.setLevel(_LOG_LEVELS[level])
-    # Don't propagate to root — otherwise a user who configures a root
-    # handler for third-party logs would see our records duplicated.
     gh_logger.propagate = False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -23,6 +24,8 @@ from gh_manage.github_client import GhNotFoundError
 from gh_manage.models.branch_protection import BranchProtectionConfig
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.models.profiles import ProfileSpec
+
+log = logging.getLogger(__name__)
 
 
 @click.command(
@@ -75,6 +78,15 @@ def apply(
     # Precheck: derive owner/repo from origin
     owner_repo = git_cli.get_origin_owner_repo(target)
 
+    log.info(
+        "apply invoked: repo=%s profile=%s apply=%s also_labels=%s also_protection=%s",
+        owner_repo,
+        profile_name,
+        apply_flag,
+        also_labels,
+        also_protection,
+    )
+
     # Load profile from package data
     profile_path = resolve_profile_path(profile_name)
     profile = load_config(profile_path, ProfileSpec)
@@ -121,6 +133,10 @@ def apply(
                 owner_repo, "main"
             )
         except GhNotFoundError:
+            log.warning(
+                "branch protection not configured on %s@main; treating as empty",
+                owner_repo,
+            )
             current_protection = {}
         protection_diff = protection_sync.compute_protection_diff(
             current_protection, policy, profile, "main"
@@ -212,10 +228,14 @@ def apply(
         findings = _doctor.run_on_path(target, profile_name=profile_name)
     except DoctorCheckError as exc:
         # Per-check failure (malformed ci.yml etc.) is a warning only.
+        log.warning("post-apply doctor check failed: %s", exc)
         click.echo(f"WARNING: post-apply doctor check failed: {exc}", err=True)
         findings = ()
     # DoctorError / GhError / GitError / ConfigError propagate to
-    # handle_errors and surface as ClickException — intentional.
+    # handle_errors and surface as ClickException — intentional. The
+    # "apply complete" INFO therefore sits AFTER this point so that
+    # monitoring consumers don't misread a successful marker when the
+    # command exits non-zero.
 
     blocking = tuple(f for f in findings if f.severity in ("critical", "high"))
     if blocking:
@@ -232,3 +252,11 @@ def apply(
             "Not failing apply — run `gh-manage doctor` to review.",
             err=True,
         )
+
+    log.info(
+        "apply complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d",
+        owner_repo,
+        n_file_changes,
+        n_label_changes,
+        n_protection_changes,
+    )

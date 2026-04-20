@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-import functools
+import logging
 import sys
-from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, TypeVar
 
 import click
 
 from gh_manage import labels_sync
-from gh_manage.config import ConfigError, load_config
+from gh_manage.commands._shared import handle_errors
+from gh_manage.config import load_config
 from gh_manage.github_api import labels as labels_api
-from gh_manage.github_client import GhError
 from gh_manage.labels_sync import LabelsDiff
 from gh_manage.models.labels import LabelsConfig
 from gh_manage.repo_ref import parse_repo
 
 DEFAULT_CONFIG_PATH = Path(str(files("gh_manage.data") / "labels.yml"))
 
-_F = TypeVar("_F", bound=Callable[..., Any])
+log = logging.getLogger(__name__)
 
 
 def _format_diff(diff: LabelsDiff) -> str:
@@ -45,22 +43,6 @@ def _format_diff(diff: LabelsDiff) -> str:
     for delete in diff.deletes:
         lines.append(f"- {delete.name}")
     return "\n".join(lines)
-
-
-def _handle_errors(func: _F) -> _F:
-    """Decorator: catch GhError/ConfigError and re-raise as click.ClickException.
-
-    click.ClickException prints `Error: <msg>` to stderr and exits 1.
-    """
-
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return func(*args, **kwargs)
-        except (GhError, ConfigError) as e:
-            raise click.ClickException(str(e)) from e
-
-    return wrapper  # type: ignore[return-value]
 
 
 @click.group(help="Synchronize GitHub repo labels against the bundled labels.yml.")
@@ -98,7 +80,7 @@ def labels() -> None:
     default=DEFAULT_CONFIG_PATH,
     help="Path to labels.yml.",
 )
-@_handle_errors
+@handle_errors
 def sync(
     repo: str,
     apply_flag: bool,
@@ -108,6 +90,8 @@ def sync(
 ) -> None:
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+    log.info("labels sync invoked: repo=%s apply=%s prune=%s", repo, apply_flag, prune)
 
     qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
@@ -129,6 +113,7 @@ def sync(
 
     click.echo("")
     labels_sync.apply_diff(diff, qualified, progress=click.echo)
+    log.info("labels sync complete: repo=%s changes=%d", qualified, diff.total_changes)
     click.echo(f"\nApplied {diff.total_changes} changes.")
 
 
@@ -151,8 +136,9 @@ def sync(
     type=click.Path(exists=True, path_type=Path),
     default=DEFAULT_CONFIG_PATH,
 )
-@_handle_errors
+@handle_errors
 def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
+    log.info("labels diff invoked: repo=%s prune=%s", repo, prune)
     qualified = parse_repo(repo)
     config = load_config(config_path, LabelsConfig)
     current = labels_api.list_labels(qualified)
@@ -172,11 +158,12 @@ def diff_cmd(repo: str, prune: bool, config_path: Path) -> None:
     help="List current labels on a repo (read-only).",
 )
 @click.argument("repo")
-@_handle_errors
+@handle_errors
 def show(repo: str) -> None:
     """Show does NOT load config/labels.yml — it lists the repo's current
     state. No --config flag, no config validation. The only failure modes
     are GhError subclasses from the list_labels call."""
+    log.info("labels show invoked: repo=%s", repo)
     qualified = parse_repo(repo)
     current = labels_api.list_labels(qualified)
     for label in sorted(current, key=lambda lb: lb.name):

@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 import click
 
 from gh_manage import drift_sync, git_cli
+from gh_manage.drift_sync.context import scan_id_var
 from gh_manage.commands._shared import (
     handle_errors,
     resolve_branch_protection_path,
@@ -70,84 +72,93 @@ def _scan_single_repo(
     Returns:
         Status/result string for the repo.
     """
-    log.info("scanning %s (profile=%s)", owner_repo, profile_name)
-    # Get default branch
-    default_branch = repo_info.get_default_branch(owner_repo)
+    # Only set scan_id if we're the outermost scope. When called from
+    # _scan_worker (--all mode), the worker has already set it so failure
+    # logs in the worker's except blocks inherit the same id. Direct CLI
+    # single-repo invocations hit this branch.
+    token = scan_id_var.set(str(uuid4())) if not scan_id_var.get() else None
+    try:
+        log.info("scanning %s (profile=%s)", owner_repo, profile_name)
+        # Get default branch
+        default_branch = repo_info.get_default_branch(owner_repo)
 
-    # Load profile and configs
-    profile = load_config(resolve_profile_path(profile_name), ProfileSpec)
-    labels_config = load_config(resolve_default_labels_path(), LabelsConfig)
+        # Load profile and configs
+        profile = load_config(resolve_profile_path(profile_name), ProfileSpec)
+        labels_config = load_config(resolve_default_labels_path(), LabelsConfig)
 
-    bp_config: BranchProtectionConfig | None = None
-    if profile.protection_policy is not None:
-        bp_config = load_config(
-            resolve_branch_protection_path(), BranchProtectionConfig
-        )
-        if profile.protection_policy not in bp_config.policies:
-            from gh_manage.protection_sync import ProtectionPolicyNotFoundError
-
-            raise ProtectionPolicyNotFoundError(
-                f"Policy {profile.protection_policy!r} not found in "
-                f"branch-protection.yml. Available policies: "
-                f"{sorted(bp_config.policies.keys())}."
+        bp_config: BranchProtectionConfig | None = None
+        if profile.protection_policy is not None:
+            bp_config = load_config(
+                resolve_branch_protection_path(), BranchProtectionConfig
             )
+            if profile.protection_policy not in bp_config.policies:
+                from gh_manage.protection_sync import ProtectionPolicyNotFoundError
 
-    # In --all mode, use a dummy empty path (skip_profile_check=True)
-    # In normal mode, use the actual path
-    if skip_profile_check:
-        import tempfile
+                raise ProtectionPolicyNotFoundError(
+                    f"Policy {profile.protection_policy!r} not found in "
+                    f"branch-protection.yml. Available policies: "
+                    f"{sorted(bp_config.policies.keys())}."
+                )
 
-        scan_path = (
-            Path(tempfile.gettempdir())
-            / f"gh-manage-scan-{owner_repo.replace('/', '-')}"
-        )
-        scan_path.mkdir(exist_ok=True)
-    else:
-        scan_path = Path.cwd().resolve()
+        # In --all mode, use a dummy empty path (skip_profile_check=True)
+        # In normal mode, use the actual path
+        if skip_profile_check:
+            import tempfile
 
-    ctx = ScanContext(
-        path=scan_path,
-        repo=owner_repo,
-        default_branch=default_branch,
-        profile=profile,
-        labels_config=labels_config,
-        bp_config=bp_config,
-    )
-
-    all_findings = drift_sync.run_all_checks(ctx)
-    log.info("scan complete for %s: %d findings", owner_repo, len(all_findings))
-    filtered = drift_sync._filter_by_severity(all_findings, severity)  # type: ignore[arg-type]
-
-    match report_mode:
-        case "stdout":
-            rendered = drift_sync.format_stdout_report(filtered)
-            return rendered
-        case "json":
-            rendered = drift_sync.format_json_report(filtered)
-            return rendered
-        case "markdown-file":
-            rendered = drift_sync.format_markdown_report(filtered)
-            if output is not None:
-                try:
-                    output.write_text(rendered, encoding="utf-8")
-                except OSError as e:
-                    raise DriftOutputError(
-                        f"Cannot write drift report to {output}: {e}. "
-                        f"Check disk space, write permissions, and that the parent "
-                        f"directory exists."
-                    ) from e
-            return f"Report written to {output}"
-        case "issue":
-            from datetime import datetime, timezone
-
-            status = drift_sync.resolve_drift_issue(
-                filtered,
-                owner_repo,
-                datetime.now(timezone.utc).isoformat(),
+            scan_path = (
+                Path(tempfile.gettempdir())
+                / f"gh-manage-scan-{owner_repo.replace('/', '-')}"
             )
-            return status
-        case _:
-            raise ValueError(f"Unknown report mode: {report_mode!r}")
+            scan_path.mkdir(exist_ok=True)
+        else:
+            scan_path = Path.cwd().resolve()
+
+        ctx = ScanContext(
+            path=scan_path,
+            repo=owner_repo,
+            default_branch=default_branch,
+            profile=profile,
+            labels_config=labels_config,
+            bp_config=bp_config,
+        )
+
+        all_findings = drift_sync.run_all_checks(ctx)
+        log.info("scan complete for %s: %d findings", owner_repo, len(all_findings))
+        filtered = drift_sync._filter_by_severity(all_findings, severity)  # type: ignore[arg-type]
+
+        match report_mode:
+            case "stdout":
+                rendered = drift_sync.format_stdout_report(filtered)
+                return rendered
+            case "json":
+                rendered = drift_sync.format_json_report(filtered)
+                return rendered
+            case "markdown-file":
+                rendered = drift_sync.format_markdown_report(filtered)
+                if output is not None:
+                    try:
+                        output.write_text(rendered, encoding="utf-8")
+                    except OSError as e:
+                        raise DriftOutputError(
+                            f"Cannot write drift report to {output}: {e}. "
+                            f"Check disk space, write permissions, and that the parent "
+                            f"directory exists."
+                        ) from e
+                return f"Report written to {output}"
+            case "issue":
+                from datetime import datetime, timezone
+
+                status = drift_sync.resolve_drift_issue(
+                    filtered,
+                    owner_repo,
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                return status
+            case _:
+                raise ValueError(f"Unknown report mode: {report_mode!r}")
+    finally:
+        if token is not None:
+            scan_id_var.reset(token)
 
 
 def _scan_worker(
@@ -167,40 +178,49 @@ def _scan_worker(
 
     Module-level (not a closure) so tests can invoke the real production
     function directly without replicating its shape inline.
+
+    The scan_id ContextVar is set HERE (not only in _scan_single_repo) so
+    the warning/exception logs below inherit the same id as the per-repo
+    scan logs — otherwise `_scan_single_repo`'s finally would have already
+    reset the id by the time the except blocks fire.
     """
+    token = scan_id_var.set(str(uuid4()))
     try:
-        result_str = _scan_single_repo(
-            entry.name,
-            entry.profile,
-            severity,
-            report_mode,
-            output,
-            skip_profile_check=True,
-        )
-        return (entry.name, "OK", result_str)
-    except (
-        GhError,
-        ConfigError,
-        GitError,
-        ProfileError,
-        ProtectionError,
-        DriftError,
-    ) as e:
-        log.warning(
-            "expected error scanning %s (%s): %s",
-            entry.name,
-            type(e).__name__,
-            e,
-        )
-        return (entry.name, "FAILED", e)
-    except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
-        log.exception(
-            "unexpected error scanning %s (%s: %s)",
-            entry.name,
-            type(e).__name__,
-            e,
-        )
-        return (entry.name, "FAILED", e)
+        try:
+            result_str = _scan_single_repo(
+                entry.name,
+                entry.profile,
+                severity,
+                report_mode,
+                output,
+                skip_profile_check=True,
+            )
+            return (entry.name, "OK", result_str)
+        except (
+            GhError,
+            ConfigError,
+            GitError,
+            ProfileError,
+            ProtectionError,
+            DriftError,
+        ) as e:
+            log.warning(
+                "expected error scanning %s (%s): %s",
+                entry.name,
+                type(e).__name__,
+                e,
+            )
+            return (entry.name, "FAILED", e)
+        except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
+            log.exception(
+                "unexpected error scanning %s (%s: %s)",
+                entry.name,
+                type(e).__name__,
+                e,
+            )
+            return (entry.name, "FAILED", e)
+    finally:
+        scan_id_var.reset(token)
 
 
 def _scan_all_repos(
