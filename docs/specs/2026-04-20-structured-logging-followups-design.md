@@ -137,7 +137,13 @@ scan_id_var: ContextVar[str] = ContextVar("scan_id", default="")
 
 Re-exported via `src/gh_manage/drift_sync/__init__.py` for external access (tests, future cross-module consumers).
 
-Rationale for `context.py` placement: `logging_config.py` needs to read `scan_id_var` from its formatter. Putting the ContextVar in `drift_sync/context.py` (which has zero downstream drift_sync dependencies) keeps the import DAG one-directional: `logging_config → drift_sync.context`. Placing it in `logging_config.py` would invert the DAG and require lazy imports.
+Rationale for `context.py` placement — considered alternatives:
+
+- **(A) `drift_sync/context.py` (chosen)**: DAG `logging_config → drift_sync.context`. `context.py` depends only on stdlib + `gh_manage.models.*`, never on logging. One-directional, no lazy import needed.
+- **(B) `logging_config.py`**: DAG `drift_sync.context → logging_config → drift_sync.context`. Cycle at module level — `logging_config` must import `scan_id_var` at the top of the file to reference it in the formatter class body, and `drift_sync/context.py` can be imported from any drift_sync consumer that also transitively pulls in logging. Breaking this cycle requires lazy (function-local) imports inside the formatter's `add_fields`, which degrades readability and introduces a per-record import lookup in the hot path.
+- **(C) a third `correlation.py` module at `gh_manage/` root**: DAG `logging_config → correlation`, `drift_sync.context → correlation`. Cleanest from a pure-DAG standpoint but introduces a one-name module solely for the ContextVar. YAGNI: there are no other correlation ids today, and if more emerge later, the module can be promoted then. Placing the single ContextVar in `drift_sync/context.py` co-locates it with its only user.
+
+(A) wins on both DAG cleanliness and co-location with domain.
 
 ### 2.2 Set/reset at scan entry
 
@@ -190,7 +196,7 @@ class _ScanIdJsonFormatter(_BaseJsonFormatter):
 
 ### 2.4 Thread propagation guarantee
 
-`ThreadPoolExecutor.submit` in Python ≥3.9 copies the caller's context to the worker thread at submit time. Our design sets `scan_id_var` **inside** the worker (in `_scan_single_repo`), not in the caller. This means each worker thread's local context holds its own independent value; parallel `--all` runs do not interleave scan_ids.
+`ThreadPoolExecutor.submit` wraps the work item in `contextvars.copy_context().run(...)` (since Python 3.9; our target is 3.12). Each worker runs inside its own copied context. Our design sets `scan_id_var` **inside** the worker (in `_scan_single_repo`), not in the caller — so the `set()` mutates the worker's copy, not the caller's. Even if two workers set at the same wall-clock instant, their mutations are isolated to their own contexts. Parallel `--all` runs therefore do not interleave scan_ids.
 
 The test `test_scan_id_isolated_per_worker_thread` (§5.3) asserts this empirically.
 
@@ -288,7 +294,16 @@ def configure_logging(
     stream: IO[str] | None = None,
     log_file: Path | None = None,
 ) -> None:
-    """Configure gh_manage's logger tree. Idempotent.
+    """Configure gh_manage's logger tree.
+
+    Handler-replacement semantics (not idempotent across differing args):
+    each call replaces the existing handler list on the `gh_manage`
+    logger with a fresh set built from the arguments. Calling twice with
+    the same arguments produces the same resulting configuration
+    (end-state idempotent), but calling twice with different log_file
+    values does NOT merge — the second call replaces the first. The CLI
+    invokes this exactly once per process, so the distinction matters
+    mainly for tests.
 
     New kwarg in cli/v1.9.0:
     - log_file: if not None, a FileHandler (append mode, utf-8) is added
@@ -335,13 +350,16 @@ def configure_logging(
 
 ### 3.5 Defaults matrix
 
+Validation applies identically to the `--log-file` flag and the `GH_MANAGE_LOG_FILE` envvar. Both routes go through `_validate_log_file` at startup; an invalid path from either source fails with `UsageError` before any subcommand runs.
+
 | Invocation | stderr | file |
 |---|---|---|
 | `gh-manage drift .` | WARNING+ plain | — |
 | `gh-manage --log-file /tmp/x.log drift .` | WARNING+ plain | WARNING+ plain |
 | `GH_MANAGE_LOG_JSON=1 gh-manage --log-file /tmp/x.log drift .` | JSON | JSON |
-| `GH_MANAGE_LOG_FILE=/tmp/x.log gh-manage drift --all` | plain | plain (22 scan_ids interleaved) |
+| `GH_MANAGE_LOG_FILE=/tmp/x.log gh-manage drift --all` | plain | plain (N scan_ids interleaved, N = enabled repos in `repos.yml`) |
 | `gh-manage --log-file /nonexistent/x.log apply .` | — | — (`UsageError`, exit 2) |
+| `GH_MANAGE_LOG_FILE=/nonexistent/x.log gh-manage apply .` | — | — (`UsageError`, exit 2 — envvar validation identical to flag) |
 
 ## §4 — Command rollout (#63)
 
@@ -357,14 +375,14 @@ Every `commands/*.py` module (except `issues.py` stub):
 
 ### 4.2 Per-command log points
 
-**`commands/apply.py`**
+**`commands/apply.py`** (locations referenced by code structure, not line numbers, to stay robust against unrelated edits)
 
 | Level | Location | Message template |
 |---|---|---|
-| INFO | `apply()` after UsageError check | `apply invoked: repo=%s profile=%s apply=%s also_labels=%s also_protection=%s` |
-| WARNING | `except GhNotFoundError: current_protection = {}` (L123) | `branch protection not configured on %s@main; treating as empty` |
-| WARNING | `except DoctorCheckError` (L213) | `post-apply doctor check failed: %s` (alongside existing click.echo) |
-| INFO | end of successful body (L195 area) | `apply complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d` |
+| INFO | inside `apply()`, immediately after the `--apply`/`--dry-run` mutual-exclusion check and `target = path.resolve()` | `apply invoked: repo=%s profile=%s apply=%s also_labels=%s also_protection=%s` |
+| WARNING | inside the `except GhNotFoundError` block that precedes `current_protection = {}` (the `--also-protection` branch) | `branch protection not configured on %s@main; treating as empty` |
+| WARNING | inside the `except DoctorCheckError as exc` block (post-apply doctor gate) | `post-apply doctor check failed: %s` (alongside existing `click.echo`) |
+| INFO | just before the final `"Applied {n_file_changes} file changes"` `click.echo` | `apply complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d` |
 
 **`commands/labels.py`**
 
@@ -380,39 +398,39 @@ Every `commands/*.py` module (except `issues.py` stub):
 
 | Level | Location | Message template |
 |---|---|---|
-| INFO | `sync()` entry | `protection sync invoked: repo=%s profile=%s apply=%s downgrade_allowed=%s` |
-| WARNING | `except GhNotFoundError: current = {}` (L152, L240) | `branch protection not configured on %s@main; treating as empty` |
-| WARNING | downgrade path entered with `--apply` | `applying protection downgrade on %s@main: %d field(s) weakened` |
-| INFO | `sync()` successful return (L204) | `protection apply complete: repo=%s fields=%d` |
-| INFO | `diff_cmd()` entry | `protection diff invoked: repo=%s profile=%s` |
+| INFO | inside `sync()`, after the mutual-exclusion check and `owner_repo` resolution | `protection sync invoked: repo=%s profile=%s apply=%s downgrade_allowed=%s` |
+| WARNING | inside each `except GhNotFoundError` block that precedes `current = {}` (both `sync()` and `diff_cmd()`) | `branch protection not configured on %s@main; treating as empty` |
+| WARNING | just before `apply_protection_diff` when `diff.has_downgrades and downgrade_allowed` | `applying protection downgrade on %s@main: %d field(s) weakened` |
+| INFO | just before `sync()`'s final `"Done. Protection updated"` `click.echo` | `protection apply complete: repo=%s fields=%d` |
+| INFO | inside `diff_cmd()`, after `owner_repo` resolution | `protection diff invoked: repo=%s profile=%s` |
 
 **`commands/init.py`**
 
 | Level | Location | Message template |
 |---|---|---|
-| INFO | `init()` after UsageError check | `init invoked: repo=%s profile=%s apply=%s` |
-| WARNING | `except GhNotFoundError: current_protection = {}` (L119) | `branch protection not configured on %s@main; treating as empty` |
-| WARNING | critical findings triggered rollback (L201) | `init aborting: critical doctor findings=%d, rolling back %d file(s)` |
-| WARNING | rollback `unlink` failure (L213) | `init rollback: cannot delete %s: %s` |
-| INFO | end of successful body (L233) | `init complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d` |
+| INFO | inside `init()`, after the `--apply`/`--dry-run` mutual-exclusion check and `target = path.resolve()` | `init invoked: repo=%s profile=%s apply=%s` |
+| WARNING | inside the `except GhNotFoundError` block that precedes `current_protection = {}` (protection diff path) | `branch protection not configured on %s@main; treating as empty` |
+| WARNING | inside the `if critical:` branch of the post-apply doctor gate, before rollback begins | `init aborting: critical doctor findings=%d, rolling back %d file(s)` |
+| WARNING | inside the `except OSError as roll_err` block of the rollback loop | `init rollback: cannot delete %s: %s` |
+| INFO | just before the final `"Done. Next steps:"` `click.echo` | `init complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d` |
 
 **`commands/doctor.py`**
 
 | Level | Location | Message template |
 |---|---|---|
-| INFO | `doctor_cmd()` entry | `doctor invoked: target=%s profile=%s report_mode=%s` |
-| WARNING | `_derive_repo_label` `except Exception` (L43) | `could not derive owner/repo from path %s: %s` |
-| INFO | before final exit decision | `doctor complete: target=%s findings=%d blocking=%d` |
+| INFO | inside `doctor_cmd()`, after target classification (`_looks_like_owner_repo`) | `doctor invoked: target=%s profile=%s report_mode=%s` |
+| WARNING | inside the `except Exception` block of `_derive_repo_label` (before returning fallback) | `could not derive owner/repo from path %s: %s` |
+| INFO | just before the `exit_zero` check at the end of `doctor_cmd()` | `doctor complete: target=%s findings=%d blocking=%d` |
 
 **`commands/issues.py`**: stub (exits 1 "not implemented"). Do not log — the stub will be replaced in cli/v0.5.0 work.
 
 ### 4.3 Decorator cleanup in `labels.py`
 
-`src/gh_manage/commands/labels.py` defines its own `_handle_errors` decorator (L50–63) that is functionally identical to `_shared.handle_errors` (imported by every other command). Under the umbrella of this rollout:
+`src/gh_manage/commands/labels.py` defines its own `_handle_errors` decorator (local, catches `(GhError, ConfigError)`) that overlaps with `_shared.handle_errors` (imported by every other command, catches a wider `_DOMAIN_ERRORS` tuple: `GhError, ConfigError, GitError, ProfileError, ProtectionError, DriftError, DoctorError`). Under the umbrella of this rollout:
 
-- Delete the local `_handle_errors` (L50–63) and its `_F` TypeVar import (L24)
+- Delete the local `_handle_errors` decorator definition and its `_F` `TypeVar` declaration
 - Import `from gh_manage.commands._shared import handle_errors`
-- Replace `@_handle_errors` decorators on `sync`, `diff_cmd`, `show` with `@handle_errors`
+- Replace every `@_handle_errors` decorator (on `sync`, `diff_cmd`, `show`) with `@handle_errors`
 - Delete now-unused imports: `functools`, `TypeVar`, `Callable`, `Any`
 
 Scope limit: only this decorator consolidation. No migration of `click.echo` to `log.info`, no reorganization of `labels.py`, no touching `_format_diff`.
@@ -457,7 +475,8 @@ Log messages do not interpolate `Finding.severity`, `DriftIssue.state`, or any o
 | `test_scan_id_reset_after_single_repo_exit` | call `_scan_single_repo(...)` (with full mocks), after call assert `scan_id_var.get() == ""` |
 | `test_scan_id_reset_even_on_exception` | make `run_all_checks` raise; after the raise propagates, assert `scan_id_var.get() == ""` |
 | `test_scan_id_in_nested_check_logs` | mock a check that captures `scan_id_var.get()`; run via full `_scan_single_repo` path; assert the captured value matches the set UUID |
-| `test_scan_id_isolated_per_worker_thread` | run `_scan_all_repos` with 2 mocked entries + mocked inner functions that capture per-thread scan_id; assert 2 distinct UUID values, both well-formed |
+| `test_scan_id_isolated_per_worker_thread` | run `_scan_all_repos(concurrency=2)` with 2 mocked `RepoEntry` + inner functions that capture `scan_id_var.get()` at their entry and expose it back to the test via a thread-safe collection; assert (a) both captured values parse as valid UUID4 via `uuid.UUID(captured, version=4)`, (b) they are distinct from each other, (c) both are distinct from the ContextVar default (empty string), (d) after the executor shuts down, the main thread's `scan_id_var.get()` is still the default empty string (proves no leakage to caller context) |
+| `test_scan_id_differs_across_sequential_scans_in_same_thread` | run `_scan_single_repo` twice sequentially in the test thread; capture scan_id during each call via mocked inner; assert the two captured UUIDs are distinct (proves `set/reset` cycle issues a fresh UUID per call) |
 
 ### 5.4 `tests/unit/commands/test_<cmd>_logging.py` (5 new files, ~40–50 LOC each)
 
@@ -471,7 +490,8 @@ Template (applied per command):
 | `test_<cmd>_logs_warning_on_doctor_check_error` | (apply only) mock `_doctor.run_on_path` to raise `DoctorCheckError`; caplog has WARNING "post-apply doctor check failed" |
 | `test_<cmd>_logs_warning_on_rollback` | (init only) force rollback path via mocked critical findings; caplog has WARNING "init aborting: critical doctor findings" |
 | `test_<cmd>_logs_warning_on_repo_label_derivation` | (doctor only) pass a path where `get_origin_owner_repo` raises; caplog has WARNING |
-| `test_labels_uses_shared_handle_errors` | (labels only) `assert not hasattr(gh_manage.commands.labels, "_handle_errors")` |
+| `test_labels_uses_shared_handle_errors` | (labels only) `assert not hasattr(gh_manage.commands.labels, "_handle_errors")` — guards the cleanup from regressing |
+| `test_labels_exception_behavior_preserved_after_decorator_swap` | (labels only) parametrize over `GhError("x")`, `ConfigError("y")` — the two types the old `_handle_errors` caught. For each, mock the underlying call site to raise it, invoke the click command via `CliRunner`, assert the result exits non-zero, stderr begins with `"Error: "`, and the original message appears verbatim (proves the wider `_shared.handle_errors` catch is functionally identical on the pre-existing overlap set, not merely type-compatible) |
 
 Total new tests: ~25–30 across 5 files.
 
@@ -483,10 +503,22 @@ gh-manage --log-level info --log-file /tmp/ghm.log drift .
 grep 'scanning' /tmp/ghm.log   # file received records
 # stderr already showed them
 
-# 2. scan_id in JSON mode
+# 2. scan_id in JSON mode (proportional to current repos.yml, not hardcoded)
+#    Grabs enabled-repo count dynamically, then asserts group count matches.
+ENABLED=$(gh-manage --help >/dev/null 2>&1 && \
+  python -c "from gh_manage.config import load_config; \
+             from gh_manage.models.repos import ReposConfig; \
+             from gh_manage.commands._shared import resolve_repos_path; \
+             cfg = load_config(resolve_repos_path(), ReposConfig); \
+             print(sum(1 for r in cfg.repos if r.enabled))")
 GH_MANAGE_LOG_JSON=1 gh-manage --log-level info drift --all 2>&1 >/dev/null \
   | jq -s 'group_by(.scan_id) | map({scan: .[0].scan_id, count: length}) | length'
-# Expected: 22 (one scan_id per enabled repo)
+# Expected: equals $ENABLED (one scan_id per enabled repo, regardless of fleet size).
+# Also validate each group's scan_id is a valid UUID4:
+GH_MANAGE_LOG_JSON=1 gh-manage --log-level info drift --all 2>&1 >/dev/null \
+  | jq -rs 'group_by(.scan_id) | .[] | .[0].scan_id' \
+  | while read -r sid; do python -c "import uuid; uuid.UUID('$sid', version=4)" || exit 1; done
+# Expected: exit 0 (every scan_id parses as UUID4)
 
 # 3. Plain mode does not leak scan_id
 gh-manage --log-level info drift . 2>&1 | grep -c 'scan_id'
