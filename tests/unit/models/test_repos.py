@@ -201,9 +201,9 @@ def test_bundled_ts_ci_template_loadable() -> None:
         f"ts-ci.yml pins {tag!r} which looks like a CLI tag. "
         "Consumers resolve workflow-track tags (vX.Y.Z). Use v1.1.0 or newer."
     )
-    assert pr_gate["with"]["gh-manage-ref"] == tag, (
-        "gh-manage-ref must match the @<tag> in `uses:`."
-    )
+    assert (
+        pr_gate["with"]["gh-manage-ref"] == tag
+    ), "gh-manage-ref must match the @<tag> in `uses:`."
 
 
 def test_repo_entry_self_referencing_defaults_false() -> None:
