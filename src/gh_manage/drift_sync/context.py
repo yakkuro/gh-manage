@@ -7,6 +7,7 @@ submodules are allowed to import from here.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,3 +50,6 @@ class DriftError(Exception):
 class DriftOutputError(DriftError):
     """Failed to write the drift report to --output <path>. Wraps the
     underlying OSError with an actionable message."""
+
+
+scan_id_var: ContextVar[str] = ContextVar("scan_id", default="")
