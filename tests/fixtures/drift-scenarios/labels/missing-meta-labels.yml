@@ -38,3 +38,7 @@ expected_findings:
     check: labels
     field_path_contains: "wontfix"
     message_contains: "missing"
+  - severity: high
+    check: labels
+    field_path_contains: "gh-manage:drift"
+    message_contains: "missing"
