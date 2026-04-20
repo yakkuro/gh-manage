@@ -128,6 +128,76 @@ jobs:
     assert check_reusable_adoption(ctx) == ()
 
 
+def test_shape_reusable_adoption_silent_when_local_relative_reusable_present():
+    """Self-dogfood case: gh-manage's own ci.yml uses the local reusable.
+
+    A job whose `uses:` resolves to `./.github/workflows/reusable-pr-gate-<lang>.yml`
+    (no `@<ref>` — local references can't carry one) must count as
+    adoption so that gh-manage's own drift scan doesn't report a
+    spurious MEDIUM. Refs #71.
+    """
+    ci_yml = """
+jobs:
+  pr-gate:
+    name: "PR Gate"
+    uses: ./.github/workflows/reusable-pr-gate-python.yml
+"""
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/gh-manage",
+        ci_yml_text=ci_yml,
+        profile_name="python-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    assert check_reusable_adoption(ctx) == ()
+
+
+def test_shape_reusable_adoption_silent_for_local_typescript_variant():
+    """Parity coverage: typescript variant of the self-dogfood path."""
+    ci_yml = """
+jobs:
+  pr-gate:
+    name: "PR Gate"
+    uses: ./.github/workflows/reusable-pr-gate-typescript.yml
+"""
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/gh-manage",
+        ci_yml_text=ci_yml,
+        profile_name="ts-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    assert check_reusable_adoption(ctx) == ()
+
+
+def test_shape_reusable_adoption_fires_on_bogus_local_path():
+    """Defensive: a `./`-prefixed path that isn't actually a reusable
+    workflow must NOT be treated as adoption (e.g., typo, wrong file).
+    """
+    ci_yml = """
+jobs:
+  pr-gate:
+    name: "PR Gate"
+    uses: ./.github/workflows/unrelated-workflow.yml
+"""
+    from gh_manage.doctor.checks import check_reusable_adoption
+
+    ctx = CheckContext(
+        repo="yakkuro/gh-manage",
+        ci_yml_text=ci_yml,
+        profile_name="python-service",
+        required_contexts=(),
+        source_hint="test",
+    )
+    findings = check_reusable_adoption(ctx)
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+
+
 def test_shape_reusable_adoption_fires_when_ci_yml_missing():
     from gh_manage.doctor.checks import check_reusable_adoption
 

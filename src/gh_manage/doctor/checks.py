@@ -16,10 +16,21 @@ from gh_manage.doctor.registry import register_check
 from gh_manage.findings import Finding
 
 # A job is a "reusable-pr-gate job" iff its `uses:` value matches this
-# regex. Indirection via another composite workflow is NOT traced.
+# regex. Two forms are accepted:
+#
+#   1. Remote pinned (the common case for every consumer of gh-manage):
+#      `yakkuro/gh-manage/.github/workflows/reusable-pr-gate-<lang>.yml@<ref>`
+#
+#   2. Local relative (the self-dogfood case — gh-manage's own ci.yml):
+#      `./.github/workflows/reusable-pr-gate-<lang>.yml`
+#
+# Indirection via another composite workflow is NOT traced.
 _REUSABLE_USES_RE = re.compile(
-    r"^yakkuro/gh-manage/\.github/workflows/"
-    r"reusable-pr-gate-(python|typescript)\.yml@.+$"
+    r"^(?:"
+    r"yakkuro/gh-manage/\.github/workflows/reusable-pr-gate-(?:python|typescript)\.yml@.+"
+    r"|"
+    r"\./\.github/workflows/reusable-pr-gate-(?:python|typescript)\.yml"
+    r")$"
 )
 
 
