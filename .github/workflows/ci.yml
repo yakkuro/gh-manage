@@ -14,7 +14,13 @@ permissions:
 
 jobs:
   pr-gate:
-    name: PR Gate (self-dogfood)
+    # Job name is deliberately "PR Gate" (matching the template invariant
+    # documented in src/gh_manage/data/templates/ci/python-ci.yml). The
+    # self-dogfood behavior — running THIS PR's tree, not a tagged release —
+    # is delivered via `gh-manage-ref: ${{ github.sha }}` below, not via the
+    # display label. Keep `name: PR Gate` so branch-protection context
+    # "PR Gate / PR Gate" resolves correctly.
+    name: PR Gate
     uses: ./.github/workflows/reusable-pr-gate-python.yml
     with:
       python-version: "3.12"

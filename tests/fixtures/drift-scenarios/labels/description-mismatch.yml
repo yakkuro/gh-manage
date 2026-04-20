@@ -19,6 +19,7 @@ inputs:
     - {name: "invalid", color: "e4e669", description: "Not actionable"}
     - {name: "question", color: "d876e3", description: "Further information is requested"}
     - {name: "wontfix", color: "ffffff", description: "This will not be worked on"}
+    - {name: "gh-manage:drift", color: "d4c5f9", description: "Automated drift report from gh-manage scanner"}
 expected_findings:
   - severity: medium
     check: labels
