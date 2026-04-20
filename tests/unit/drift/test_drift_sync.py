@@ -115,6 +115,35 @@ def test_scan_context_is_frozen(tmp_path: Path) -> None:
         ctx.repo = "other"  # type: ignore[misc]
 
 
+def test_scan_context_self_referencing_defaults_false(tmp_path: Path) -> None:
+    profile = ProfileSpec(version=1, name="test", files=[])
+    labels_config = _make_labels_config()
+    ctx = ScanContext(
+        path=tmp_path,
+        repo="yakkuro/foo",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+    )
+    assert ctx.self_referencing is False
+
+
+def test_scan_context_self_referencing_true(tmp_path: Path) -> None:
+    profile = ProfileSpec(version=1, name="test", files=[])
+    labels_config = _make_labels_config()
+    ctx = ScanContext(
+        path=tmp_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+        self_referencing=True,
+    )
+    assert ctx.self_referencing is True
+
+
 # Error hierarchy
 def test_all_errors_inherit_drift_error() -> None:
     assert issubclass(DriftOutputError, DriftError)
@@ -434,9 +463,9 @@ def test_scenario(
     )
     for expected in scenario.expected_findings:
         matches = [f for f in findings if _matches(f, expected)]
-        assert (
-            matches
-        ), f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        assert matches, (
+            f"No finding matches expected {expected}; got: {[str(f) for f in findings]}"
+        )
 
 
 # Task 6: _protection_diff_to_findings adapter
