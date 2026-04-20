@@ -11,6 +11,7 @@ This module is internal to the commands package (leading underscore).
 from __future__ import annotations
 
 import functools
+import logging
 import re
 from collections.abc import Callable
 from importlib.resources import files
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import click
+
+log = logging.getLogger(__name__)
 
 from gh_manage.config import ConfigError, ConfigFileNotFoundError
 from gh_manage.doctor.errors import DoctorError
@@ -134,3 +137,36 @@ def format_files_diff(diff: ProfileFilesDiff) -> str:
     for n in diff.noops:
         lines.append(f"  = noop      {n.dest}")
     return "\n".join(lines)
+
+
+def _resolve_self_referencing(owner_repo: str) -> bool:
+    """Look up `owner_repo` in bundled repos.yml; return its self_referencing
+    flag if found, False otherwise.
+
+    Used by the single-repo drift CLI path (where there's no RepoEntry in
+    scope) to flow the flag into ScanContext. The --all path bypasses
+    this helper because _scan_worker has the RepoEntry directly.
+
+    Failures (missing repos.yml, parse error) are logged and return False
+    rather than propagating — the drift scan should not abort because of
+    this lookup. An unregistered repo is also a False (no entry, ad-hoc
+    scan).
+    """
+    from gh_manage.config import ConfigError, load_config
+    from gh_manage.models.repos import ReposConfig
+
+    try:
+        config = load_config(resolve_repos_path(), ReposConfig)
+    except (ConfigError, OSError) as e:
+        log.warning(
+            "could not load repos.yml for self_referencing lookup of %s: %s; "
+            "treating as self_referencing=False",
+            owner_repo,
+            e,
+        )
+        return False
+
+    for entry in config.repos:
+        if entry.name == owner_repo:
+            return entry.self_referencing
+    return False
