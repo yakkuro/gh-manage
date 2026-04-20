@@ -2,7 +2,7 @@ name: Drift Scanner
 
 on:
   schedule:
-    - cron: '0 0 * * 1'   # Every Monday 00:00 UTC (= 09:00 JST)
+    - cron: '0 0 * * 1,4'  # Mon + Thu 00:00 UTC (= 09:00 JST)
   workflow_dispatch:        # Manual trigger for debugging
 
 permissions:
@@ -28,3 +28,14 @@ jobs:
         run: gh-manage drift --all --report-mode issue --severity low
         env:
           GH_TOKEN: ${{ secrets.GH_MANAGE_TOKEN }}
+          GH_MANAGE_LOG_JSON: '1'
+          GH_MANAGE_LOG_LEVEL: info
+          GH_MANAGE_LOG_FILE: ${{ runner.temp }}/drift-scan.log
+
+      - name: Upload drift scan logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-scan-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/drift-scan.log
+          retention-days: 30
