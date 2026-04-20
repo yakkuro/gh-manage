@@ -27,6 +27,13 @@ class RepoEntry(BaseModel):
     name: str  # "owner/repo" full form
     profile: str  # bundled profile name
     enabled: bool = True
+    self_referencing: bool = False
+    """True when this repo publishes the templates it would otherwise be
+    drift-checked against (e.g., yakkuro/gh-manage). Causes
+    `check_profile_files` to skip per-entry comparisons whose template
+    content references `<repo>/.github/workflows/` — the self-hosted form
+    that uses `./` paths cannot hash-match the pinned-tag form. See
+    docs/specs/2026-04-20-self-referencing-repos-design.md."""
 
     @field_validator("name")
     @classmethod

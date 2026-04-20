@@ -2,6 +2,7 @@ version: 1
 repos:
   - name: yakkuro/gh-manage
     profile: python-service
+    self_referencing: true
   - name: yakkuro/slack-agents
     profile: python-service
   - name: yakkuro/llm-kb

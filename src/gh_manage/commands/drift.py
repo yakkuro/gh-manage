@@ -22,6 +22,7 @@ import click
 from gh_manage import drift_sync, git_cli
 from gh_manage.drift_sync.context import scan_id_var
 from gh_manage.commands._shared import (
+    _resolve_self_referencing,
     handle_errors,
     resolve_branch_protection_path,
     resolve_default_labels_path,
@@ -63,6 +64,7 @@ def _scan_single_repo(
     report_mode: str,
     output: Path | None,
     skip_profile_check: bool = False,
+    self_referencing: bool = False,
 ) -> str:
     """Scan a single repo and return the result/status string.
 
@@ -74,6 +76,9 @@ def _scan_single_repo(
         output: Output file path (for markdown-file mode).
         skip_profile_check: If True, don't check profile files locally
             (used in --all mode with no local clone).
+        self_referencing: True when this repo publishes the templates it
+            would be drift-checked against. Skips per-entry comparisons
+            in check_profile_files for self-hosted templates.
 
     Returns:
         Status/result string for the repo.
@@ -158,6 +163,7 @@ def _scan_single_repo(
             bp_config=bp_config,
             live_required_contexts=live_contexts,
             live_required_contexts_readable=live_readable,
+            self_referencing=self_referencing,
         )
 
         all_findings = drift_sync.run_all_checks(ctx)
@@ -232,6 +238,7 @@ def _scan_worker(
                 report_mode,
                 output,
                 skip_profile_check=True,
+                self_referencing=entry.self_referencing,
             )
             return (entry.name, "OK", result_str)
         except (
@@ -417,6 +424,7 @@ def drift(
         raise click.UsageError(f"Path does not exist: {target}")
 
     owner_repo = git_cli.get_origin_owner_repo(target)
+    self_referencing = _resolve_self_referencing(owner_repo)
     result = _scan_single_repo(
         owner_repo,
         profile_name,
@@ -424,6 +432,7 @@ def drift(
         report_mode,
         output,
         skip_profile_check=False,
+        self_referencing=self_referencing,
     )
 
     # For issue mode, result is already printed by resolve_drift_issue

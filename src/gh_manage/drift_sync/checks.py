@@ -122,6 +122,22 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _is_self_referencing_template(template_content: str, repo: str) -> bool:
+    """True when the template references the scanning repo's own URL.
+
+    Self-referencing pattern: a template uses
+    `<owner>/<repo>/.github/workflows/...` (the pinned-tag form), but a
+    repo that publishes those workflows mirrors them locally with `./`
+    paths. The two cannot hash-match by design, so the drift check should
+    skip the comparison when ScanContext.self_referencing=True.
+
+    Detection is content-based (not config-based) so that adding new
+    self-referencing templates does not require per-entry config — the
+    helper picks them up automatically based on URL pattern.
+    """
+    return f"{repo}/.github/workflows/" in template_content
+
+
 @register_check
 def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
     """Drift check: local repo files vs profile's template files.
@@ -145,6 +161,17 @@ def check_profile_files(ctx: ScanContext) -> tuple[Finding, ...]:
     for entry in ctx.profile.files:
         local = ctx.path / entry.dest
         template_content = _read_template_content(entry.source)
+        if ctx.self_referencing and _is_self_referencing_template(
+            template_content, ctx.repo
+        ):
+            log.info(
+                "skipping self-referencing template %s for %s "
+                "(template references %s/.github/workflows/)",
+                entry.source,
+                ctx.repo,
+                ctx.repo,
+            )
+            continue
         template_hash = _content_hash(template_content)
 
         if not local.exists():

@@ -36,6 +36,12 @@ class ScanContext:
       a successful protection fetch. False when the fetch hit an
       auth/permission error; shape/* checks must then skip the
       produced-vs-required comparison to avoid spurious findings.
+    - self_referencing: True when the scanning repo is the publisher of
+      the templates it would be drift-checked against. When True,
+      check_profile_files skips per-entry comparisons whose template
+      content references `<repo>/.github/workflows/` (the form a
+      self-hosted repo cannot mirror locally). See
+      docs/specs/2026-04-20-self-referencing-repos-design.md.
     """
 
     path: Path
@@ -46,6 +52,7 @@ class ScanContext:
     bp_config: BranchProtectionConfig | None
     live_required_contexts: tuple[str, ...] = ()
     live_required_contexts_readable: bool = True
+    self_referencing: bool = False
 
 
 class DriftError(Exception):

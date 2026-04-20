@@ -115,6 +115,35 @@ def test_scan_context_is_frozen(tmp_path: Path) -> None:
         ctx.repo = "other"  # type: ignore[misc]
 
 
+def test_scan_context_self_referencing_defaults_false(tmp_path: Path) -> None:
+    profile = ProfileSpec(version=1, name="test", files=[])
+    labels_config = _make_labels_config()
+    ctx = ScanContext(
+        path=tmp_path,
+        repo="yakkuro/foo",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+    )
+    assert ctx.self_referencing is False
+
+
+def test_scan_context_self_referencing_true(tmp_path: Path) -> None:
+    profile = ProfileSpec(version=1, name="test", files=[])
+    labels_config = _make_labels_config()
+    ctx = ScanContext(
+        path=tmp_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+        self_referencing=True,
+    )
+    assert ctx.self_referencing is True
+
+
 # Error hierarchy
 def test_all_errors_inherit_drift_error() -> None:
     assert issubclass(DriftOutputError, DriftError)
@@ -422,6 +451,7 @@ def test_scenario(
         profile=profile,
         labels_config=labels_config,
         bp_config=bp_config,
+        self_referencing=scenario.self_referencing,
     )
 
     findings = check_fn(ctx)
@@ -675,3 +705,217 @@ def test_golden_production_data_zero_drift(mocker: Any, tmp_path: Path) -> None:
 
     files_findings = check_profile_files(ctx)
     assert files_findings == (), f"check_profile_files drift: {files_findings}"
+
+
+# Issue #72: self-referencing template skip
+
+
+def test_is_self_referencing_template_matches_repo_url() -> None:
+    from gh_manage.drift_sync.checks import _is_self_referencing_template
+
+    content = (
+        "name: CI\n"
+        "jobs:\n"
+        "  pr-gate:\n"
+        "    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.0.0\n"
+    )
+    assert _is_self_referencing_template(content, "yakkuro/gh-manage") is True
+
+
+def test_is_self_referencing_template_no_match_when_repo_differs() -> None:
+    from gh_manage.drift_sync.checks import _is_self_referencing_template
+
+    content = (
+        "name: CI\n"
+        "jobs:\n"
+        "  pr-gate:\n"
+        "    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.0.0\n"
+    )
+    # An external repo (yakkuro/foo) is NOT self-referencing for this template.
+    assert _is_self_referencing_template(content, "yakkuro/foo") is False
+
+
+def test_is_self_referencing_template_no_match_for_plain_doc() -> None:
+    from gh_manage.drift_sync.checks import _is_self_referencing_template
+
+    content = "# CLAUDE.md\nThis is a docs file with no workflow URLs.\n"
+    assert _is_self_referencing_template(content, "yakkuro/gh-manage") is False
+
+
+def test_check_profile_files_skips_self_referencing_when_flag_true(
+    tmp_path: Path, mocker: Any
+) -> None:
+    """When self_referencing=True AND template references <repo>/.github/workflows/,
+    the entry is skipped — no finding, even if the local file diverges."""
+    from gh_manage.drift_sync import check_profile_files
+    from gh_manage.models.profiles import FileEntry
+
+    template_content = (
+        "name: CI\n"
+        "jobs:\n"
+        "  pr-gate:\n"
+        "    uses: yakkuro/gh-manage/.github/workflows/x.yml@v1.0.0\n"
+    )
+    mocker.patch(
+        "gh_manage.drift_sync.checks._read_template_content",
+        return_value=template_content,
+    )
+
+    profile = ProfileSpec(
+        version=1,
+        name="python-service",
+        files=[
+            FileEntry(
+                source="ci/python-ci.yml",
+                dest=".github/workflows/ci.yml",
+                skip_if_exists=False,
+            )
+        ],
+    )
+    labels_config = _make_labels_config()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / ".github" / "workflows").mkdir(parents=True)
+    (repo_path / ".github" / "workflows" / "ci.yml").write_text(
+        "name: CI\njobs:\n  pr-gate:\n    uses: ./.github/workflows/x.yml\n",
+        encoding="utf-8",
+    )
+
+    ctx = ScanContext(
+        path=repo_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+        self_referencing=True,
+    )
+    findings = check_profile_files(ctx)
+    assert findings == ()
+
+
+def test_check_profile_files_does_not_skip_when_self_referencing_false(
+    tmp_path: Path, mocker: Any
+) -> None:
+    """Same setup as above but self_referencing=False: today's behavior —
+    drift produces a MEDIUM finding."""
+    from gh_manage.drift_sync import check_profile_files
+    from gh_manage.models.profiles import FileEntry
+
+    template_content = (
+        "name: CI\n"
+        "jobs:\n"
+        "  pr-gate:\n"
+        "    uses: yakkuro/gh-manage/.github/workflows/x.yml@v1.0.0\n"
+    )
+    mocker.patch(
+        "gh_manage.drift_sync.checks._read_template_content",
+        return_value=template_content,
+    )
+
+    profile = ProfileSpec(
+        version=1,
+        name="python-service",
+        files=[
+            FileEntry(
+                source="ci/python-ci.yml",
+                dest=".github/workflows/ci.yml",
+                skip_if_exists=False,
+            )
+        ],
+    )
+    labels_config = _make_labels_config()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / ".github" / "workflows").mkdir(parents=True)
+    (repo_path / ".github" / "workflows" / "ci.yml").write_text(
+        "name: CI\njobs:\n  pr-gate:\n    uses: ./.github/workflows/x.yml\n",
+        encoding="utf-8",
+    )
+
+    ctx = ScanContext(
+        path=repo_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+        self_referencing=False,
+    )
+    findings = check_profile_files(ctx)
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert ".github/workflows/ci.yml" in findings[0].field_path
+
+
+def test_check_profile_files_skips_only_self_ref_entries_not_others(
+    tmp_path: Path, mocker: Any
+) -> None:
+    """Two entries: one self-referencing (skipped), one plain doc (still
+    drift-checked). Confirms per-entry granularity — CLAUDE.md LOW signal
+    still fires for self_referencing repos."""
+    from gh_manage.drift_sync import check_profile_files
+    from gh_manage.models.profiles import FileEntry
+
+    workflow_template = (
+        "name: CI\n"
+        "jobs:\n"
+        "  pr-gate:\n"
+        "    uses: yakkuro/gh-manage/.github/workflows/x.yml@v1.0.0\n"
+    )
+    claude_template = "# CLAUDE.md (template)\nProject conventions.\n"
+
+    def fake_read(source: str) -> str:
+        if source == "ci/python-ci.yml":
+            return workflow_template
+        if source == "shared/CLAUDE.md":
+            return claude_template
+        raise AssertionError(f"unexpected source: {source!r}")
+
+    mocker.patch(
+        "gh_manage.drift_sync.checks._read_template_content", side_effect=fake_read
+    )
+
+    profile = ProfileSpec(
+        version=1,
+        name="python-service",
+        files=[
+            FileEntry(
+                source="ci/python-ci.yml",
+                dest=".github/workflows/ci.yml",
+                skip_if_exists=False,
+            ),
+            FileEntry(
+                source="shared/CLAUDE.md",
+                dest="CLAUDE.md",
+                skip_if_exists=True,
+            ),
+        ],
+    )
+    labels_config = _make_labels_config()
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / ".github" / "workflows").mkdir(parents=True)
+    (repo_path / ".github" / "workflows" / "ci.yml").write_text(
+        "name: CI\njobs:\n  pr-gate:\n    uses: ./.github/workflows/x.yml\n",
+        encoding="utf-8",
+    )
+    (repo_path / "CLAUDE.md").write_text(
+        "# CLAUDE.md (heavily edited)\nLocal overrides.\n",
+        encoding="utf-8",
+    )
+
+    ctx = ScanContext(
+        path=repo_path,
+        repo="yakkuro/gh-manage",
+        default_branch="main",
+        profile=profile,
+        labels_config=labels_config,
+        bp_config=None,
+        self_referencing=True,
+    )
+    findings = check_profile_files(ctx)
+    # Workflow skipped, CLAUDE.md still drifts (LOW because skip_if_exists=True).
+    assert len(findings) == 1
+    assert findings[0].severity == "low"
+    assert "CLAUDE.md" in findings[0].field_path
