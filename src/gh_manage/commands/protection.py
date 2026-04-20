@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from gh_manage.protection_sync import (
     ProtectionDowngradeError,
     ProtectionPolicyNotFoundError,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _is_tty_stdin() -> bool:
@@ -145,12 +148,24 @@ def sync(
     target = path.resolve()
     owner_repo = git_cli.get_origin_owner_repo(target)
 
+    log.info(
+        "protection sync invoked: repo=%s profile=%s apply=%s downgrade_allowed=%s",
+        owner_repo,
+        profile_name,
+        apply_flag,
+        downgrade_allowed,
+    )
+
     profile, bp_config = _load_profile_and_policy(profile_name)
     policy = bp_config.policies[profile.protection_policy]  # type: ignore[index]
 
     try:
         current = protection_api.get_branch_protection(owner_repo, "main")
     except GhNotFoundError:
+        log.warning(
+            "branch protection not configured on %s@main; treating as empty",
+            owner_repo,
+        )
         current = {}  # no protection yet → treat as empty
 
     diff = protection_sync.compute_protection_diff(current, policy, profile, "main")
@@ -191,6 +206,12 @@ def sync(
                 "downgrade in CI/non-interactive contexts."
             )
 
+        log.warning(
+            "applying protection downgrade on %s@main: %d field(s) weakened",
+            owner_repo,
+            len(diff.downgrades),
+        )
+
     backup_dir = resolve_backup_dir()
     click.echo("")
     protection_sync.apply_protection_diff(
@@ -201,6 +222,13 @@ def sync(
         backup_dir=backup_dir,
         progress=click.echo,
     )
+
+    log.info(
+        "protection apply complete: repo=%s fields=%d",
+        owner_repo,
+        len(diff.changes),
+    )
+
     click.echo(f"\nDone. Protection updated for {owner_repo}:main.")
 
 
@@ -232,12 +260,22 @@ def diff_cmd(path: Path, profile_name: str, downgrade_allowed: bool) -> None:
     target = path.resolve()
     owner_repo = git_cli.get_origin_owner_repo(target)
 
+    log.info(
+        "protection diff invoked: repo=%s profile=%s",
+        owner_repo,
+        profile_name,
+    )
+
     profile, bp_config = _load_profile_and_policy(profile_name)
     policy = bp_config.policies[profile.protection_policy]  # type: ignore[index]
 
     try:
         current = protection_api.get_branch_protection(owner_repo, "main")
     except GhNotFoundError:
+        log.warning(
+            "branch protection not configured on %s@main; treating as empty",
+            owner_repo,
+        )
         current = {}
 
     diff = protection_sync.compute_protection_diff(current, policy, profile, "main")
