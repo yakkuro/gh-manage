@@ -32,6 +32,10 @@ class ScanContext:
     - live_required_contexts: tuple of status-check contexts required by
       the repo's branch-protection policy, resolved from the remote repo.
       Defaults to empty to avoid breaking existing call sites.
+    - live_required_contexts_readable: True when the tuple above reflects
+      a successful protection fetch. False when the fetch hit an
+      auth/permission error; shape/* checks must then skip the
+      produced-vs-required comparison to avoid spurious findings.
     """
 
     path: Path
@@ -41,6 +45,7 @@ class ScanContext:
     labels_config: LabelsConfig
     bp_config: BranchProtectionConfig | None
     live_required_contexts: tuple[str, ...] = ()
+    live_required_contexts_readable: bool = True
 
 
 class DriftError(Exception):

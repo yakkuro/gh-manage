@@ -24,6 +24,7 @@ def _fake_scan_ctx():
         labels_config = None
         bp_config = None
         live_required_contexts = ()
+        live_required_contexts_readable = True
 
     return _FakeCtx()
 

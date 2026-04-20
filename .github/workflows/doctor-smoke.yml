@@ -48,16 +48,8 @@ jobs:
       # that's the one doctor exists to catch. Informational findings
       # still surface in the JSON artifact so maintainers can track
       # them over time.
-      # GH_TOKEN needs enough scope to read branch protection (the default
-      # GITHUB_TOKEN has contents:read only and cannot query
-      # /repos/{repo}/branches/{branch}/protection). Without the PAT the
-      # doctor's live_required_contexts lookup returns () and
-      # shape/job-shape-coherence fires a spurious CRITICAL because the
-      # produced "PR Gate / PR Gate" is "not in" the empty required set.
       - name: Run doctor (exit 1 on critical only)
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_MANAGE_TOKEN }}
         run: |
           set -euo pipefail
           uv run gh-manage doctor . --profile python-service \
@@ -66,8 +58,6 @@ jobs:
       - name: Emit full report (informational)
         if: always()
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_MANAGE_TOKEN }}
         run: |
           set -euo pipefail
           uv run gh-manage doctor . --profile python-service \

@@ -174,6 +174,49 @@ jobs:
     assert check_reusable_adoption(ctx) == ()
 
 
+def test_shape_job_coherence_skips_when_required_contexts_unreadable():
+    """If the protection fetch failed (auth/permission), the check must
+    not fire CRITICAL — the live state is unknown, not empty. Emits
+    a LOW diagnostic instead so the operator sees the skip.
+    """
+    ci_yml = """
+jobs:
+  pr-gate:
+    name: "PR Gate"
+    uses: yakkuro/gh-manage/.github/workflows/reusable-pr-gate-python.yml@v1.1.0
+"""
+    from gh_manage.doctor.checks import check_job_shape_coherence
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text=ci_yml,
+        profile_name="python-service",
+        required_contexts=(),
+        required_contexts_readable=False,
+        source_hint="test",
+    )
+    findings = check_job_shape_coherence(ctx)
+    assert len(findings) == 1
+    assert findings[0].severity == "low"
+    assert "Could not read live branch protection" in findings[0].message
+
+
+def test_shape_required_contexts_match_skips_when_unreadable():
+    """required-contexts-match must be silent when live state is unknown."""
+    from gh_manage.doctor.checks import check_required_contexts_match
+
+    ctx = CheckContext(
+        repo="yakkuro/example",
+        ci_yml_text="",
+        profile_name="python-service",
+        required_contexts=(),
+        required_contexts_readable=False,
+        profile_required_contexts=("PR Gate / PR Gate",),
+        source_hint="test",
+    )
+    assert check_required_contexts_match(ctx) == ()
+
+
 def test_shape_reusable_adoption_fires_on_bogus_local_path():
     """Defensive: a `./`-prefixed path that isn't actually a reusable
     workflow must NOT be treated as adoption (e.g., typo, wrong file).
