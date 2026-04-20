@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from gh_manage import __version__
@@ -15,6 +17,29 @@ from gh_manage.commands import (
     protection as protection_cmd,
 )
 from gh_manage.logging_config import LogLevel, configure_logging
+
+
+def _validate_log_file(path: Path) -> None:
+    """Raise UsageError if the log file cannot be written to.
+
+    Runs at CLI startup, before any subcommand. Rejects missing parent
+    directory and write-permission failures with actionable messages.
+    Creating the file (0-byte touch via append-open) is intentional —
+    users who pass --log-file have opted into file creation.
+    """
+    parent = path.parent.resolve()
+    if not parent.is_dir():
+        raise click.UsageError(
+            f"--log-file parent directory does not exist: {parent}. "
+            f"Create it or choose a different path."
+        )
+    try:
+        with path.open("a", encoding="utf-8"):
+            pass
+    except OSError as e:
+        raise click.UsageError(
+            f"Cannot write to --log-file {path}: {e}. Check permissions and disk space."
+        ) from e
 
 
 @click.group(
