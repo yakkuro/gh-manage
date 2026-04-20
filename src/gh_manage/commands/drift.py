@@ -72,7 +72,11 @@ def _scan_single_repo(
     Returns:
         Status/result string for the repo.
     """
-    token = scan_id_var.set(str(uuid4()))
+    # Only set scan_id if we're the outermost scope. When called from
+    # _scan_worker (--all mode), the worker has already set it so failure
+    # logs in the worker's except blocks inherit the same id. Direct CLI
+    # single-repo invocations hit this branch.
+    token = scan_id_var.set(str(uuid4())) if not scan_id_var.get() else None
     try:
         log.info("scanning %s (profile=%s)", owner_repo, profile_name)
         # Get default branch
@@ -153,7 +157,8 @@ def _scan_single_repo(
             case _:
                 raise ValueError(f"Unknown report mode: {report_mode!r}")
     finally:
-        scan_id_var.reset(token)
+        if token is not None:
+            scan_id_var.reset(token)
 
 
 def _scan_worker(
@@ -173,40 +178,49 @@ def _scan_worker(
 
     Module-level (not a closure) so tests can invoke the real production
     function directly without replicating its shape inline.
+
+    The scan_id ContextVar is set HERE (not only in _scan_single_repo) so
+    the warning/exception logs below inherit the same id as the per-repo
+    scan logs — otherwise `_scan_single_repo`'s finally would have already
+    reset the id by the time the except blocks fire.
     """
+    token = scan_id_var.set(str(uuid4()))
     try:
-        result_str = _scan_single_repo(
-            entry.name,
-            entry.profile,
-            severity,
-            report_mode,
-            output,
-            skip_profile_check=True,
-        )
-        return (entry.name, "OK", result_str)
-    except (
-        GhError,
-        ConfigError,
-        GitError,
-        ProfileError,
-        ProtectionError,
-        DriftError,
-    ) as e:
-        log.warning(
-            "expected error scanning %s (%s): %s",
-            entry.name,
-            type(e).__name__,
-            e,
-        )
-        return (entry.name, "FAILED", e)
-    except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
-        log.exception(
-            "unexpected error scanning %s (%s: %s)",
-            entry.name,
-            type(e).__name__,
-            e,
-        )
-        return (entry.name, "FAILED", e)
+        try:
+            result_str = _scan_single_repo(
+                entry.name,
+                entry.profile,
+                severity,
+                report_mode,
+                output,
+                skip_profile_check=True,
+            )
+            return (entry.name, "OK", result_str)
+        except (
+            GhError,
+            ConfigError,
+            GitError,
+            ProfileError,
+            ProtectionError,
+            DriftError,
+        ) as e:
+            log.warning(
+                "expected error scanning %s (%s): %s",
+                entry.name,
+                type(e).__name__,
+                e,
+            )
+            return (entry.name, "FAILED", e)
+        except Exception as e:  # noqa: BLE001 — parallel isolation, spec §2
+            log.exception(
+                "unexpected error scanning %s (%s: %s)",
+                entry.name,
+                type(e).__name__,
+                e,
+            )
+            return (entry.name, "FAILED", e)
+    finally:
+        scan_id_var.reset(token)
 
 
 def _scan_all_repos(

@@ -214,14 +214,6 @@ def apply(
         + "."
     )
 
-    log.info(
-        "apply complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d",
-        owner_repo,
-        n_file_changes,
-        n_label_changes,
-        n_protection_changes,
-    )
-
     # Post-apply doctor warnings (spec §5 enforcement scope).
     # apply NEVER blocks on doctor FINDINGS; critical/high go to stderr
     # for visibility. But apply DOES propagate doctor *setup* errors
@@ -240,7 +232,10 @@ def apply(
         click.echo(f"WARNING: post-apply doctor check failed: {exc}", err=True)
         findings = ()
     # DoctorError / GhError / GitError / ConfigError propagate to
-    # handle_errors and surface as ClickException — intentional.
+    # handle_errors and surface as ClickException — intentional. The
+    # "apply complete" INFO therefore sits AFTER this point so that
+    # monitoring consumers don't misread a successful marker when the
+    # command exits non-zero.
 
     blocking = tuple(f for f in findings if f.severity in ("critical", "high"))
     if blocking:
@@ -257,3 +252,11 @@ def apply(
             "Not failing apply — run `gh-manage doctor` to review.",
             err=True,
         )
+
+    log.info(
+        "apply complete: repo=%s file_changes=%d label_changes=%d protection_changes=%d",
+        owner_repo,
+        n_file_changes,
+        n_label_changes,
+        n_protection_changes,
+    )

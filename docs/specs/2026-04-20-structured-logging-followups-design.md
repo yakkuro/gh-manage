@@ -194,9 +194,11 @@ class _ScanIdJsonFormatter(_BaseJsonFormatter):
 
 `configure_logging` switches to `_ScanIdJsonFormatter` in JSON mode (replaces the current `JsonFormatter`). Plain-text mode uses the stdlib `logging.Formatter` unchanged — scan_id is intentionally not included in plain output (the user-intent "agent-friendly format" lives in JSON).
 
-### 2.4 Thread propagation guarantee
+### 2.4 Thread isolation guarantee
 
-`ThreadPoolExecutor.submit` wraps the work item in `contextvars.copy_context().run(...)` (since Python 3.9; our target is 3.12). Each worker runs inside its own copied context. Our design sets `scan_id_var` **inside** the worker (in `_scan_single_repo`), not in the caller — so the `set()` mutates the worker's copy, not the caller's. Even if two workers set at the same wall-clock instant, their mutations are isolated to their own contexts. Parallel `--all` runs therefore do not interleave scan_ids.
+`ContextVar` is thread-local: each thread has its own independent view of the variable. `ThreadPoolExecutor.submit` in CPython 3.12 does **not** automatically `copy_context()` for you — each worker thread simply starts from the default (empty) context. Our design sets `scan_id_var` **inside the worker** (at `_scan_worker` entry, before any `_scan_single_repo` call), so each parallel `--all` worker ends up with its own thread-local id. Two workers setting `scan_id_var` at the same wall-clock instant mutate two independent contexts; they do not interfere. Parallel `--all` runs therefore do not interleave scan_ids.
+
+Why `_scan_worker` (not `_scan_single_repo`) owns the set/reset: `_scan_worker`'s `except` blocks log failure records AFTER the inner function returns/raises. If `_scan_single_repo`'s `finally` had reset scan_id first, those failure logs — the ones an operator most needs to correlate — would arrive with no scan_id. Setting at the worker's outermost scope ensures failure records inherit the correct id. `_scan_single_repo` still conditionally sets scan_id when called directly from the single-repo CLI path (where no outer worker exists).
 
 The test `test_scan_id_isolated_per_worker_thread` (§5.3) asserts this empirically.
 

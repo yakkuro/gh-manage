@@ -66,7 +66,7 @@ def test_scan_id_set_at_single_repo_entry(mock_scan_deps, monkeypatch):
         skip_profile_check=True,
     )
     sid = captured["a"]
-    uuid.UUID(sid, version=4)
+    assert uuid.UUID(sid).version == 4
 
 
 def test_scan_id_reset_after_single_repo_exit(mock_scan_deps, monkeypatch):
@@ -129,8 +129,8 @@ def test_scan_id_differs_across_sequential_scans_in_same_thread(
     )
     second = captured["seq"]
     assert first != second
-    uuid.UUID(first, version=4)
-    uuid.UUID(second, version=4)
+    assert uuid.UUID(first).version == 4
+    assert uuid.UUID(second).version == 4
 
 
 def test_scan_id_isolated_per_worker_thread(mock_scan_deps, monkeypatch):
@@ -167,5 +167,51 @@ def test_scan_id_isolated_per_worker_thread(mock_scan_deps, monkeypatch):
     assert len(vals) == 2
     assert vals[0] != vals[1]
     for v in vals:
-        uuid.UUID(v, version=4)
+        assert uuid.UUID(v).version == 4
+    assert scan_id_var.get() == ""
+
+
+def test_scan_id_present_during_worker_failure_logs(mock_scan_deps, monkeypatch):
+    """Codex review finding: failure logs in _scan_worker must inherit scan_id.
+
+    Before the fix, `_scan_single_repo`'s finally reset scan_id before
+    `_scan_worker`'s except blocks could log — meaning the most valuable
+    log records (failures) had no correlation id. Regression guard.
+    """
+    from gh_manage.models.repos import RepoEntry
+
+    drift_cmd = mock_scan_deps
+
+    captured: dict[str, str] = {}
+
+    def _raise_inside_scan(ctx):
+        # Capture scan_id visible to the innermost check
+        captured["inner"] = scan_id_var.get()
+        raise RuntimeError("boom in check")
+
+    monkeypatch.setattr(drift_cmd.drift_sync, "run_all_checks", _raise_inside_scan)
+
+    entry = RepoEntry(name="owner/repo", profile="python-service", enabled=True)
+
+    # Patch log.exception to capture the scan_id visible when the worker
+    # emits the failure record.
+    original_exception = drift_cmd.log.exception
+
+    def _exception_capture(*args, **kwargs):
+        captured["worker_exception"] = scan_id_var.get()
+        return original_exception(*args, **kwargs)
+
+    monkeypatch.setattr(drift_cmd.log, "exception", _exception_capture)
+
+    name, status, _exc = drift_cmd._scan_worker(entry, "low", "stdout", None)
+
+    assert status == "FAILED"
+    # Both inner and worker-exception were captured with a non-empty UUID4
+    inner_sid = captured["inner"]
+    worker_sid = captured["worker_exception"]
+    assert uuid.UUID(inner_sid).version == 4
+    assert uuid.UUID(worker_sid).version == 4
+    # Crucially, they are the SAME id — one logical scan, one correlation id
+    assert inner_sid == worker_sid
+    # After worker returns, scan_id is reset
     assert scan_id_var.get() == ""
