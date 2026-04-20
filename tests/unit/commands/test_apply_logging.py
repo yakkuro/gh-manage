@@ -168,3 +168,33 @@ def test_apply_logs_warning_on_ghnotfound_protection_fallback(tmp_path, monkeypa
     )
     assert "branch protection not configured" in result.output
     assert "owner/repo" in result.output
+
+
+def test_apply_logs_warning_on_doctor_check_error(
+    mock_apply_deps, tmp_path, monkeypatch
+):
+    from gh_manage.doctor.errors import DoctorCheckError
+
+    monkeypatch.setattr(
+        "gh_manage.profile_sync.apply_files_diff",
+        lambda *a, **kw: [],
+    )
+
+    def _raise_doctor_check(*a, **kw):
+        raise DoctorCheckError("bad ci.yml")
+
+    monkeypatch.setattr("gh_manage.doctor.run_on_path", _raise_doctor_check)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "apply",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--apply",
+        ],
+    )
+    assert "post-apply doctor check failed" in result.output
+    assert "bad ci.yml" in result.output
