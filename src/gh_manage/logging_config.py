@@ -19,7 +19,10 @@ import os
 import sys
 from typing import IO, Literal
 
-from pythonjsonlogger.jsonlogger import JsonFormatter
+from pythonjsonlogger.jsonlogger import JsonFormatter as _BaseJsonFormatter
+
+from gh_manage.drift_sync.context import scan_id_var
+
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 
@@ -36,6 +39,21 @@ _JSON_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _JSON_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 _TRUTHY = {"1", "true", "yes"}
+
+
+class _ScanIdJsonFormatter(_BaseJsonFormatter):
+    """JSON formatter that injects the current scan_id ContextVar.
+
+    When called outside a drift scan, scan_id_var.get() returns the
+    default empty string, and the field is omitted from the JSON
+    output. See docs/specs/2026-04-20-structured-logging-followups-design.md §2.
+    """
+
+    def add_fields(self, log_record, record, message_dict):
+        super().add_fields(log_record, record, message_dict)
+        sid = scan_id_var.get()
+        if sid:
+            log_record["scan_id"] = sid
 
 
 def _env_says_json() -> bool:
@@ -78,7 +96,7 @@ def configure_logging(
 
     formatter: logging.Formatter
     if json:
-        formatter = JsonFormatter(_JSON_FORMAT, datefmt=_JSON_DATEFMT)
+        formatter = _ScanIdJsonFormatter(_JSON_FORMAT, datefmt=_JSON_DATEFMT)
     else:
         formatter = logging.Formatter(_PLAIN_FORMAT, datefmt=_PLAIN_DATEFMT)
 

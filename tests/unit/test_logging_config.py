@@ -99,9 +99,9 @@ def test_configure_logging_does_not_add_handler_to_root_logger() -> None:
     root_handlers_before = list(logging.getLogger().handlers)
     configure_logging()
     root_handlers_after = list(logging.getLogger().handlers)
-    assert (
-        root_handlers_before == root_handlers_after
-    ), "configure_logging must not touch the root logger — only the `gh_manage` tree."
+    assert root_handlers_before == root_handlers_after, (
+        "configure_logging must not touch the root logger — only the `gh_manage` tree."
+    )
 
 
 def test_configure_logging_sets_propagate_false() -> None:
@@ -117,3 +117,46 @@ def test_configure_logging_sets_propagate_false() -> None:
 
     configure_logging()
     assert logging.getLogger("gh_manage").propagate is False
+
+
+# ---- scan_id injection tests (cli/v1.9.0) ----
+
+import json as _json
+
+from gh_manage.drift_sync.context import scan_id_var
+from gh_manage.logging_config import configure_logging as _configure_logging
+
+
+def _parse_first_json(stream: io.StringIO) -> dict:
+    text = stream.getvalue().strip()
+    assert text, "expected at least one log line"
+    return _json.loads(text.splitlines()[0])
+
+
+def test_json_formatter_includes_scan_id_when_set():
+    stream = io.StringIO()
+    _configure_logging(level="info", json=True, stream=stream)
+    token = scan_id_var.set("test-uuid-123")
+    try:
+        logging.getLogger("gh_manage.test").info("hello")
+    finally:
+        scan_id_var.reset(token)
+    assert _parse_first_json(stream)["scan_id"] == "test-uuid-123"
+
+
+def test_json_formatter_omits_scan_id_when_unset():
+    stream = io.StringIO()
+    _configure_logging(level="info", json=True, stream=stream)
+    logging.getLogger("gh_manage.test").info("hello")
+    assert "scan_id" not in _parse_first_json(stream)
+
+
+def test_plain_formatter_omits_scan_id():
+    stream = io.StringIO()
+    _configure_logging(level="info", json=False, stream=stream)
+    token = scan_id_var.set("would-be-visible-if-not-omitted")
+    try:
+        logging.getLogger("gh_manage.test").info("hello")
+    finally:
+        scan_id_var.reset(token)
+    assert "would-be-visible" not in stream.getvalue()
