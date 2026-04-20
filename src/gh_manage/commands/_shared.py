@@ -20,8 +20,6 @@ from typing import Any, TypeVar
 
 import click
 
-log = logging.getLogger(__name__)
-
 from gh_manage.config import ConfigError, ConfigFileNotFoundError
 from gh_manage.doctor.errors import DoctorError
 from gh_manage.drift_sync import DriftError
@@ -29,6 +27,8 @@ from gh_manage.git_cli import GitError
 from gh_manage.github_client import GhError
 from gh_manage.profile_sync import ProfileError, ProfileFilesDiff
 from gh_manage.protection_sync import ProtectionError
+
+log = logging.getLogger(__name__)
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
