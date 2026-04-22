@@ -63,7 +63,7 @@ def _iter_reusable_jobs(ci_yml: dict):
             yield job_id, job
 
 
-@register_check("shape/job-shape-coherence")
+@register_check("shape/job-shape-coherence", resolves_with=("sync_files",))
 def check_job_shape_coherence(ctx: CheckContext) -> tuple[Finding, ...]:
     """critical: produced status context must match protection's
     required context. Spec §3 check 1.
@@ -126,7 +126,7 @@ def check_job_shape_coherence(ctx: CheckContext) -> tuple[Finding, ...]:
     return tuple(findings)
 
 
-@register_check("shape/reusable-adoption")
+@register_check("shape/reusable-adoption", resolves_with=("sync_files",))
 def check_reusable_adoption(ctx: CheckContext) -> tuple[Finding, ...]:
     """medium: flag repos in repos.yml that don't use a reusable-pr-gate.
 
@@ -170,7 +170,7 @@ def check_reusable_adoption(ctx: CheckContext) -> tuple[Finding, ...]:
     )
 
 
-@register_check("shape/required-contexts-match")
+@register_check("shape/required-contexts-match", resolves_with=("sync_protection",))
 def check_required_contexts_match(ctx: CheckContext) -> tuple[Finding, ...]:
     """Diff profile's declared required_contexts vs live protection.
 
