@@ -20,8 +20,12 @@ from typing import Any, TypeVar
 
 import click
 
+from gh_manage import doctor
 from gh_manage.config import ConfigError, ConfigFileNotFoundError
 from gh_manage.doctor.errors import DoctorError
+from gh_manage.doctor.report import format_stdout as _doctor_format_stdout
+from gh_manage.doctor.semantic_filter import ApplyScope, filter_pre_apply_findings
+from gh_manage.findings import Finding, Severity
 from gh_manage.drift_sync import DriftError
 from gh_manage.git_cli import GitError
 from gh_manage.github_client import GhError
@@ -170,3 +174,71 @@ def _resolve_self_referencing(owner_repo: str) -> bool:
         if entry.name == owner_repo:
             return entry.self_referencing
     return False
+
+
+def run_pre_apply_doctor(
+    target: Path,
+    profile_name: str,
+    scope: ApplyScope,
+    allow_blocking: bool,
+) -> None:
+    """Block the caller if pre-apply doctor finds unresolved blocking findings.
+
+    Raises `click.ClickException` on block. Returns None on pass. Emits
+    a loud stderr warning when `allow_blocking=True` bypasses a block.
+
+    Exception handling:
+    - Per-check exceptions (CiYmlParseError, DoctorCheckError) are
+      caught INSIDE `doctor.registry.run_checks` and converted to
+      synthetic LOW findings (see spec §3.1.1). No handling needed
+      here.
+    - Setup errors (DoctorError subclasses raised from run_on_path
+      itself — profile missing, repos.yml corrupt, git_cli failure,
+      GitHub API error before any check runs) propagate.
+    """
+    blocking_severities: tuple[Severity, ...] = ("critical", "high")
+
+    findings = doctor.run_on_path(target, profile_name=profile_name)
+    filtered = filter_pre_apply_findings(findings, scope)
+    blocking = tuple(f for f in filtered if f.severity in blocking_severities)
+
+    log.info(
+        "pre-apply doctor: findings=%d filtered=%d blocking=%d allow_blocking=%s",
+        len(findings),
+        len(findings) - len(filtered),
+        len(blocking),
+        allow_blocking,
+    )
+
+    if not blocking:
+        return
+
+    if allow_blocking:
+        click.echo(
+            f"WARNING: --allow-blocking: proceeding despite "
+            f"{len(blocking)} blocking finding(s).",
+            err=True,
+        )
+        return
+
+    raise click.ClickException(_format_blocking_message(blocking, target))
+
+
+def _format_blocking_message(
+    blocking: tuple[Finding, ...],
+    target: Path,
+) -> str:
+    """Compose the user-facing pre-apply block message."""
+    repo_label = str(target)
+    prefix = (
+        "Pre-apply doctor found blocking-severity finding(s) that this "
+        "invocation will not resolve:\n"
+    )
+    body = _doctor_format_stdout(blocking, repo=repo_label)
+    suffix = (
+        "\n"
+        "To proceed anyway (not recommended), re-run with --allow-blocking.\n"
+        "To see all findings (including non-blocking), run:\n"
+        f"    gh-manage doctor {target}"
+    )
+    return prefix + "\n" + body + "\n" + suffix
