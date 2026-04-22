@@ -58,9 +58,8 @@ User intent: build the minimum prevention layer that would have blocked the #46 
 src/gh_manage/
 ├── doctor/
 │   ├── checks.py                        MODIFY  add resolves_with kwarg to @register_check calls
-│   ├── registry.py                      MODIFY  expose resolves_with tuple on registered checks
+│   ├── registry.py                      MODIFY  expose resolves_with + per-check exception isolation in run_checks
 │   ├── semantic_filter.py               NEW     ApplyScope + filter_pre_apply_findings
-│   └── __init__.py                      (no change)
 ├── commands/
 │   ├── init.py                          MODIFY  pre-apply doctor, delete post-apply rollback
 │   ├── apply.py                         MODIFY  pre-apply doctor, --allow-blocking flag
@@ -68,7 +67,8 @@ src/gh_manage/
 tests/
 ├── unit/
 │   ├── doctor/
-│   │   └── test_semantic_filter.py      NEW     all ApplyScope × check combinations
+│   │   ├── test_semantic_filter.py      NEW     all ApplyScope × check combinations
+│   │   └── test_registry.py             NEW/EXT per-check exception isolation + resolves_with getter
 │   ├── data/
 │   │   └── test_ci_templates.py         NEW     canonical shape regression gate
 │   └── commands/
@@ -139,6 +139,24 @@ class ApplyScope:
     check's `resolves_with` tuple is True in this scope — i.e., this
     apply invocation will (attempt to) resolve the finding as a
     side-effect of running. Findings outside scope remain blocking.
+
+    Frozen to prevent mutation during filter iteration and to enable
+    safe sharing if filtering is ever parallelized.
+
+    Domain semantics:
+    - sync_files=True: ci.yml and other profile files will be rewritten
+      from bundled templates. shape/* checks about ci.yml content are
+      resolved by this action.
+    - sync_labels=True: label set will be synchronized to labels.yml.
+      Label-domain drift checks (drift_sync, not doctor) would be
+      resolved by this action — currently no doctor check uses this
+      domain but it is reserved for future use.
+    - sync_protection=True: branch protection will be synchronized.
+      shape/required-contexts-match findings are resolved by this
+      action. NOTE: a profile where `protection_policy is None` cannot
+      have sync_protection=True because init/apply refuses to touch
+      protection in that case — findings from shape/required-contexts-
+      match (if any) will NOT be filtered and remain blocking.
     """
 
     sync_files: bool
@@ -148,8 +166,12 @@ class ApplyScope:
 
 Construction sites:
 
-- `init`: `ApplyScope(sync_files=True, sync_labels=True, sync_protection=(profile.protection_policy is not None))` — init always syncs files + labels; protection depends on whether the profile declares a policy.
-- `apply`: `ApplyScope(sync_files=True, sync_labels=also_labels, sync_protection=also_protection)` — apply syncs files unconditionally; labels/protection gated on the existing CLI flags.
+- `init`: `ApplyScope(sync_files=True, sync_labels=True, sync_protection=(profile.protection_policy is not None))`
+  - init always syncs files + labels (unconditional, per init.py Q1 design decision).
+  - `sync_protection` is True **only when the profile declares a protection_policy**. A profile without protection_policy means "this profile does not manage branch protection"; findings from protection checks therefore remain blocking and the operator must resolve them before init succeeds (correct behavior — the profile is implicitly asserting it does not fix protection drift).
+- `apply`: `ApplyScope(sync_files=True, sync_labels=also_labels, sync_protection=also_protection)`
+  - apply always syncs files (per apply.py current behavior).
+  - Labels/protection gated on the existing CLI flags. `--also-protection` without `--also-labels` is legal; scope reflects exactly what will be touched.
 
 ### 2.2 Check registration
 
@@ -206,10 +228,17 @@ def filter_pre_apply_findings(
 
 ### 2.4 Invariants
 
-1. **Conservative default**: `resolves_with=()` (or unset) means the check is never filtered — pre-apply always blocks on it.
+1. **Conservative default**: `resolves_with=()` (or unset) means the check is never filtered — pre-apply always blocks on it. A new check added without a `resolves_with` kwarg fails CLOSED (blocking), not open.
 2. **AND over domains**: a check that declares `resolves_with=("sync_files", "sync_protection")` is only filtered when *both* domains are in scope.
-3. **No severity interaction**: filter operates on `check` name alone; severity is applied downstream (`severity in ("critical", "high")`). A low-severity check with a matching resolves_with is still filtered (no-op in practice — only criticals/highs matter for blocking).
-4. **Skipped checks emit zero findings**: if `shape/job-shape-coherence` skips due to unreadable protection, it returns a single `low` diagnostic (`"unreadable"`). That low has `resolves_with=("sync_files",)` but won't block because `low not in ("critical", "high")`.
+3. **Severity is applied AFTER filtering, not before**: `filter_pre_apply_findings` operates on the `check` name regardless of severity. Pipeline order:
+
+   ```
+   findings → filter_pre_apply_findings(filter by check) → blocking = [f for f in filtered if f.severity in ("critical","high")]
+   ```
+
+   A low-severity finding from a check with matching `resolves_with` is still filtered, but would not have blocked anyway (low not in blocking set). This is semantically a no-op at the block gate, but matters if a future consumer enumerates `filtered` for non-blocking purposes (e.g., reporting "this apply will resolve N findings").
+4. **Skipped checks emit zero findings or a low diagnostic**: if `shape/job-shape-coherence` skips due to unreadable protection, it returns a single `low` diagnostic (`"unreadable"`). That low has `resolves_with=("sync_files",)` but won't block because `low not in ("critical", "high")`.
+5. **Per-check exception isolation**: if a check raises `CiYmlParseError` or `DoctorCheckError`, the registry's `run_checks` **does not abort the iteration**. Instead it emits a synthetic LOW finding (`check="shape/check-error:<original_check_name>"`, `resolves_with=<original.resolves_with>`) and continues to the next check. This prevents a single broken ci.yml or malfunctioning check from silently dropping findings from all other checks. See §3.1 and §5.1 for full exception taxonomy.
 
 ## §3 — Pre-apply integration in init / apply
 
@@ -230,17 +259,19 @@ def run_pre_apply_doctor(
     WARNING log line and stderr message on `allow_blocking=True` even
     when findings exist — the override is loud.
 
-    Setup errors (DoctorError / GhError / GitError) propagate to
-    handle_errors. Per-check errors (DoctorCheckError, e.g. malformed
-    ci.yml) emit a warning and treat the check as returning zero
-    findings — matches existing apply behavior.
+    Exception handling model:
+    - Per-check exceptions (CiYmlParseError, DoctorCheckError) are
+      caught INSIDE registry.run_checks (see §2.4 invariant 5). The
+      failing check contributes a synthetic LOW diagnostic finding;
+      other checks' findings are preserved. No special handling
+      required in this helper.
+    - Setup errors (DoctorError subclasses raised from
+      `run_on_path` itself — profile missing, repos.yml corrupt,
+      git_cli failure, GitHub API error before any check runs)
+      propagate to handle_errors. They are user-actionable and not
+      recoverable by proceeding with apply.
     """
-    try:
-        findings = doctor.run_on_path(target, profile_name=profile_name)
-    except DoctorCheckError as exc:
-        log.warning("pre-apply doctor per-check error: %s", exc)
-        click.echo(f"WARNING: pre-apply doctor check failed: {exc}", err=True)
-        return
+    findings = doctor.run_on_path(target, profile_name=profile_name)
 
     filtered = filter_pre_apply_findings(findings, scope)
     blocking = tuple(f for f in filtered if f.severity in ("critical", "high"))
@@ -267,6 +298,58 @@ def run_pre_apply_doctor(
 
 `_format_blocking_message()` produces the user-facing message described in §3.3.
 
+### 3.1.1 `registry.run_checks` per-check isolation
+
+To support invariant 5 (§2.4), `doctor/registry.py::run_checks` gains per-check exception handling:
+
+```python
+# src/gh_manage/doctor/registry.py
+
+def run_checks(ctx: CheckContext) -> tuple[Finding, ...]:
+    """Run every registered check, isolating per-check exceptions.
+
+    If a check raises CiYmlParseError or DoctorCheckError, its output
+    is replaced with a single synthetic LOW finding
+    (check='shape/check-error:<original_name>',
+    resolves_with=<original_resolves_with>) and iteration continues.
+
+    Other exception classes (DoctorError subclasses OTHER than the two
+    above; GhError, GitError, etc.) are NOT caught here — they
+    propagate to run_on_path's caller.
+    """
+    all_findings: list[Finding] = []
+    for fn in _CHECKS:
+        check_name = getattr(fn, "__doctor_check_name__", "<unknown>")
+        resolves_with = getattr(fn, "__doctor_resolves_with__", ())
+        try:
+            all_findings.extend(fn(ctx))
+        except (CiYmlParseError, DoctorCheckError) as exc:
+            all_findings.append(
+                Finding(
+                    severity="low",
+                    check=f"shape/check-error:{check_name}",
+                    repo=ctx.repo,
+                    field_path=check_name,
+                    current_value="check_error",
+                    desired_value="check_passes",
+                    message=(
+                        f"Doctor check {check_name!r} failed to run: {exc}. "
+                        f"Other checks continued; pre-apply filter treats "
+                        f"this as if {check_name!r} emitted no findings."
+                    ),
+                    remediation=(
+                        f"Fix the underlying cause of the check failure. "
+                        f"For ci.yml parse errors, either repair the YAML "
+                        f"manually or proceed with apply (which rewrites "
+                        f"ci.yml from the profile template)."
+                    ),
+                )
+            )
+    return tuple(all_findings)
+```
+
+The synthetic finding carries the **original check's** `resolves_with` so the semantic filter handles it consistently: if `shape/job-shape-coherence` raises `CiYmlParseError`, the synthetic diagnostic has `resolves_with=("sync_files",)`, and init/apply with `sync_files=True` filter it out (correct — the broken ci.yml will be overwritten).
+
 ### 3.2 Invocation sites
 
 **`init.py`** (pseudo-diff):
@@ -289,7 +372,19 @@ def run_pre_apply_doctor(
   # post-apply doctor: demoted to warning-only (matches apply.py)
 ```
 
-The current post-apply block (lines 209-255 of init.py) is replaced with the existing warning-style post-apply used in `apply.py`.
+The current post-apply block (lines 209-255 of init.py) is replaced with the same warning-style post-apply as `apply.py`. Concretely, post-apply for init will emit this format on stderr (identical to apply's existing format):
+
+```
+WARNING: post-apply doctor surfaced blocking-severity findings:
+
+  [CRITICAL] shape/job-shape-coherence
+    path: .github/workflows/ci.yml:jobs.<id>
+    ...full Finding display via doctor.report.format_stdout...
+
+Not failing init — run `gh-manage doctor` to review.
+```
+
+Exit code remains 0. If a post-apply CRITICAL appears (which would be unexpected given pre-apply passed), the operator is notified and can re-run `gh-manage doctor` for the full picture. This is informational, not blocking — the pre-apply gate is the enforcement point.
 
 **`apply.py`** (pseudo-diff):
 
@@ -336,6 +431,18 @@ When `--apply` is not set (dry-run), pre-apply doctor is NOT invoked. Rationale:
 - The block gate only makes sense for `--apply`; in dry-run there is nothing to block.
 
 Users who want combined preview run `gh-manage doctor <path> --profile <name>` and `gh-manage apply <path> --profile <name> --dry-run` separately. Their outputs are independent.
+
+#### 3.4.1 Flag combination validation
+
+`--allow-blocking` is only meaningful with `--apply` (since dry-run does not invoke the gate). Passing both `--dry-run` and `--allow-blocking`, or passing `--allow-blocking` without any apply flag, should fail fast with a `click.UsageError`:
+
+```
+Error: --allow-blocking requires --apply; it has no effect in dry-run mode.
+```
+
+Rationale: silently ignoring `--allow-blocking` in dry-run would let CI scripts copy-paste flag sets between apply and dry-run invocations without notice, masking a broken expectation. Explicit error is cheaper than a debug session.
+
+Same validation applies to `init` (symmetry with `apply`).
 
 ### 3.5 CLI flag surface
 
@@ -435,13 +542,16 @@ Out of scope (existing tests handle these or they are irrelevant):
 
 | Exception class | Source | Pre-apply handling |
 |---|---|---|
-| `DoctorError` (profile missing, repos.yml corrupt, etc.) | `doctor.run_on_path` | Propagate — `handle_errors` turns it into `ClickException`; apply aborts with clear message before any mutation |
-| `DoctorCheckError` (one check raised, e.g. malformed ci.yml YAML) | per-check | Log WARNING, stderr WARNING, treat check as returning zero findings, continue |
-| `GhError` / `GhNotFoundError` | GitHub API layer | Propagate — same path as `DoctorError` |
-| `GitError` | git_cli origin resolution | Propagate (this would already have fired during owner/repo derivation before pre-apply) |
-| `ClickException` (raised by `run_pre_apply_doctor` itself) | this module | Exits with code 1 and prints message — standard Click behavior |
+| `DoctorError` (setup layer: profile missing, repos.yml corrupt, token scope missing) | `doctor.run_on_path` — before any check executes | Propagate — `handle_errors` turns it into `ClickException`; apply aborts with clear message before any mutation |
+| `CiYmlParseError` (per-check: malformed ci.yml YAML) | inside one check | Caught in `registry.run_checks`; synthetic LOW finding emitted with `resolves_with` copied from the original check; other checks continue (see §2.4 invariant 5, §3.1.1) |
+| `DoctorCheckError` (per-check: unexpected check failure) | inside one check | Same as CiYmlParseError |
+| `GhError` / `GhNotFoundError` | GitHub API layer, during `run_on_path` setup | Propagate — same path as setup `DoctorError` |
+| `GitError` | `git_cli.get_origin_owner_repo` | Propagate (this would already have fired during owner/repo derivation before pre-apply doctor is invoked) |
+| `ClickException` (raised by `run_pre_apply_doctor` itself on block) | this module | Exits with code 1 and prints the formatted block message — standard Click behavior |
 
-Rationale for downgrading `DoctorCheckError` to a warning instead of a hard error: a malformed ci.yml in the target repo should not block `apply` from proceeding to rewrite that ci.yml from the profile template. Converting the parse error into a warning and treating the finding count as zero lets `apply` "heal" the broken state. The user still sees the warning line on stderr so they are not surprised.
+Rationale for the per-check isolation pattern: a malformed ci.yml or a malfunctioning single check must not silently drop findings from *other* checks that ran successfully. Before this spec, `run_checks` used `chain.from_iterable` which aborts iteration on the first exception — meaning one broken check could mask blocking findings elsewhere. The new pattern ensures every check contributes either its findings or a clearly-labeled diagnostic, so the block gate evaluates against complete information.
+
+Secondary benefit: for the specific case of a broken ci.yml where `sync_files=True` (the common init/apply case), the synthetic LOW diagnostic carries `resolves_with=("sync_files",)` from the original `shape/job-shape-coherence` check. The semantic filter correctly drops it as "this apply will resolve it", so pre-apply proceeds and rewrites the ci.yml from the canonical template. The repo is healed without operator intervention.
 
 ### 5.2 `--allow-blocking` semantics
 
@@ -463,7 +573,7 @@ This is stronger than the existing post-apply-rollback guarantee in init: pre-ap
 ### 5.4 Log fields
 
 - `log.info("pre-apply doctor: findings=%d filtered=%d blocking=%d allow_blocking=%s", ...)` — single INFO line, structured for the cli/v1.8.0 JSON formatter.
-- `log.warning(...)` on `DoctorCheckError`, matching existing post-apply patterns.
+- `log.warning(...)` inside `registry.run_checks` per-check catch, emitted alongside the synthetic LOW finding.
 
 ## §6 — Test plan
 
@@ -482,7 +592,18 @@ This is stronger than the existing post-apply-rollback guarantee in init: pre-ap
 | `test_filter_preserves_severity_ordering` | mixed critical/high/medium/low, scope filters out the high | remaining findings preserve their original order |
 | `test_apply_scope_is_frozen` | attempt to mutate `ApplyScope` instance | raises `FrozenInstanceError` |
 
-**`tests/unit/data/test_ci_templates.py`** — as described in §4.2. Parametrized over `python-ci.yml` and `ts-ci.yml`.
+**`tests/unit/data/test_ci_templates.py`** — as described in §4.2. Parametrized over `python-ci.yml` and `ts-ci.yml`. Includes an in-test comment noting that any future bundled template must be added to the parametrize list manually.
+
+**`tests/unit/doctor/test_registry.py`** (new or extended) — per-check exception isolation:
+
+| Test | Setup | Expected |
+|---|---|---|
+| `test_run_checks_isolates_ci_yml_parse_error` | register a mock check that raises `CiYmlParseError`; register a second check that returns a HIGH finding | both a synthetic LOW diagnostic AND the second check's HIGH finding are in the result |
+| `test_run_checks_isolates_doctor_check_error` | mock check raises `DoctorCheckError` | synthetic LOW diagnostic emitted; other checks' findings preserved |
+| `test_run_checks_propagates_non_check_errors` | mock check raises `ValueError` (not `DoctorCheckError`) | exception propagates (we do NOT catch arbitrary exceptions — only the two known per-check classes) |
+| `test_synthetic_finding_carries_original_resolves_with` | mock check has `resolves_with=("sync_files",)`, raises `CiYmlParseError` | synthetic Finding's lookup via `get_check_resolves_with("shape/check-error:<name>")` returns `("sync_files",)` |
+| `test_get_check_resolves_with_for_registered_check` | happy-path lookup | returns the tuple declared in the decorator |
+| `test_get_check_resolves_with_for_unknown_check` | unregistered check name | returns `()` (conservative default) |
 
 ### 6.2 Modified test files
 
@@ -496,12 +617,17 @@ This is stronger than the existing post-apply-rollback guarantee in init: pre-ap
 
 **`tests/unit/commands/test_apply.py`**:
 
-- ADD `test_apply_blocks_on_unresolved_high_finding`: e.g. critical finding from `shape/job-shape-coherence` in a scope where `sync_files=True` — wait, that's filtered. Instead: construct a finding with `resolves_with=("sync_labels",)` and scope `sync_labels=False` (no `--also-labels`).
-- ADD `test_apply_also_protection_first_time_succeeds`: `--also-protection` against empty-protection repo, high finding filtered, proceeds.
-- ADD `test_apply_without_also_protection_blocks_on_protection_finding`: no `--also-protection`, high `shape/required-contexts-match` → NOT filtered → block.
-- ADD `test_apply_allow_blocking`: same as block case with `--allow-blocking` → proceeds with warning.
-- ADD `test_apply_dry_run_skips_pre_apply_doctor`.
-- ADD `test_apply_post_apply_warning_unchanged`: verify existing warning-only post-apply behavior is preserved.
+- ADD `test_apply_without_also_protection_blocks_on_protection_finding`: apply without `--also-protection`, fixture produces a HIGH `shape/required-contexts-match` finding. Scope is `sync_protection=False`, so the finding is NOT filtered → block with ClickException; verify side-effects = 0.
+- ADD `test_apply_also_protection_first_time_succeeds`: same HIGH finding but with `--also-protection`. Scope is `sync_protection=True` → filtered → apply proceeds and writes files / syncs protection.
+- ADD `test_apply_allow_blocking_bypasses_block`: same setup as the blocking case above, add `--allow-blocking`. Assert stderr WARNING message is emitted, apply proceeds, no ClickException raised.
+- ADD `test_apply_dry_run_skips_pre_apply_doctor`: `--dry-run` (without `--apply`) — assert `doctor.run_on_path` is NOT called (use mock to verify).
+- ADD `test_apply_dry_run_with_allow_blocking_raises_usage_error`: both `--dry-run` and `--allow-blocking` set → expect `click.UsageError`. Covers §3.4.1 flag validation.
+- ADD `test_apply_post_apply_warning_unchanged`: pre-apply passes, apply runs, post-apply doctor finds a residual finding → verify stderr warning, exit code 0, no behavior change from pre-v1.10 post-apply warning format.
+- ADD `test_apply_malformed_ci_yml_heals`: fixture repo has malformed ci.yml. `shape/job-shape-coherence` raises `CiYmlParseError` inside `run_checks`; registry converts to synthetic LOW with `resolves_with=("sync_files",)`; filter drops it (sync_files=True); apply proceeds, rewrites ci.yml from template. Post-apply doctor passes. (Verifies §3.1.1 + §5.1 integration.)
+
+### 6.2.1 Cross-cutting: conservative-default test
+
+- ADD in `test_semantic_filter.py` (also applicable to commands): `test_filter_never_drops_check_without_resolves_with` — register a mock check with `resolves_with=()`, emit a high finding, run filter with full scope (`sync_files=sync_labels=sync_protection=True`). Assert the finding is kept. This is the explicit regression gate for invariant 1 (§2.4) — if a future developer forgets to pass `resolves_with`, the test must catch that the finding remains blocking.
 
 ### 6.3 TDD ordering
 
@@ -518,7 +644,7 @@ Per CLAUDE.md "TDD is mandatory":
 
 - `doctor/semantic_filter.py`: 100% branch coverage (small module, all branches meaningful).
 - `doctor/registry.py`: new `get_check_resolves_with` branch covered.
-- `commands/_shared.py` new helper: 100% branch coverage (DoctorCheckError path, allow_blocking path, block path, pass path).
+- `commands/_shared.py` new helper: 100% branch coverage (allow_blocking path, block path, pass path). Per-check exception coverage is tested in `test_registry.py` (new or extended).
 - `commands/init.py` + `commands/apply.py`: new pre-apply integration paths 100%.
 
 ### 6.5 No E2E changes
