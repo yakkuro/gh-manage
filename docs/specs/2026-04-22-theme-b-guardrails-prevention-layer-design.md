@@ -350,6 +350,47 @@ def run_checks(ctx: CheckContext) -> tuple[Finding, ...]:
 
 The synthetic finding carries the **original check's** `resolves_with` so the semantic filter handles it consistently: if `shape/job-shape-coherence` raises `CiYmlParseError`, the synthetic diagnostic has `resolves_with=("sync_files",)`, and init/apply with `sync_files=True` filter it out (correct — the broken ci.yml will be overwritten).
 
+### 3.1.2 `get_check_resolves_with` lookup mechanism
+
+`semantic_filter.filter_pre_apply_findings` consults `get_check_resolves_with(finding.check)` to decide filtering. The registry must resolve both plain check names AND synthetic `shape/check-error:*` names to the correct tuple:
+
+```python
+# src/gh_manage/doctor/registry.py
+
+_CHECK_METADATA: dict[str, tuple[str, ...]] = {}
+# populated by @register_check at import time:
+#   "shape/job-shape-coherence"    -> ("sync_files",)
+#   "shape/reusable-adoption"      -> ("sync_files",)
+#   "shape/required-contexts-match" -> ("sync_protection",)
+
+
+def get_check_resolves_with(check_name: str) -> tuple[str, ...]:
+    """Return the resolves_with tuple for a check name.
+
+    Handles three cases:
+
+    1. Plain registered name (e.g. "shape/job-shape-coherence") —
+       direct lookup.
+    2. Synthetic error name "shape/check-error:<original>" emitted by
+       `run_checks` when a check raised CiYmlParseError/DoctorCheckError —
+       strip the prefix and re-lookup the original.
+    3. Unknown name — return () (conservative default, invariant 1).
+    """
+    if check_name in _CHECK_METADATA:
+        return _CHECK_METADATA[check_name]
+    prefix = "shape/check-error:"
+    if check_name.startswith(prefix):
+        original = check_name[len(prefix):]
+        return _CHECK_METADATA.get(original, ())
+    return ()
+```
+
+Design rationale: this approach is preferred over adding a `resolves_with` field to the `Finding` dataclass (in `src/gh_manage/findings.py`) because:
+
+- `Finding` is shared between `drift_sync` and `doctor`. `drift_sync` findings do not participate in the pre-apply filter and have no natural `resolves_with` concept. Adding an Optional-None field would bloat the value type with a doctor-only concern.
+- Keeping lookup in the registry preserves the registry's role as the single source of truth for check metadata.
+- The synthetic-name prefix convention (`shape/check-error:<original>`) is deterministic and parseable; stripping it in `get_check_resolves_with` is a 2-line change with no cross-module coupling.
+
 ### 3.2 Invocation sites
 
 **`init.py`** (pseudo-diff):
@@ -385,6 +426,18 @@ Not failing init — run `gh-manage doctor` to review.
 ```
 
 Exit code remains 0. If a post-apply CRITICAL appears (which would be unexpected given pre-apply passed), the operator is notified and can re-run `gh-manage doctor` for the full picture. This is informational, not blocking — the pre-apply gate is the enforcement point.
+
+Scenarios where post-apply findings legitimately differ from pre-apply:
+
+- Transient GitHub API failure during apply's protection sync leaves protection in a partial state.
+- Concurrent edits by another actor (another user, a separate automation) mutate the repo between pre-apply read and post-apply read.
+- `--allow-blocking` was used — pre-apply findings were not fixed, so they correctly reappear post-apply.
+
+Operator recovery guidance:
+
+- Review the warning output + run `gh-manage doctor <path> --profile <name>`.
+- If the finding is "apply would fix it" (e.g. `shape/required-contexts-match` after a flaky protection sync), re-run `gh-manage apply --apply --also-protection`.
+- If the finding indicates divergence from profile that apply cannot fix alone (e.g., a user manually edited ci.yml after the sync), decide whether to overwrite (`--force`) or keep the edit and update the profile.
 
 **`apply.py`** (pseudo-diff):
 
@@ -442,7 +495,31 @@ Error: --allow-blocking requires --apply; it has no effect in dry-run mode.
 
 Rationale: silently ignoring `--allow-blocking` in dry-run would let CI scripts copy-paste flag sets between apply and dry-run invocations without notice, masking a broken expectation. Explicit error is cheaper than a debug session.
 
-Same validation applies to `init` (symmetry with `apply`).
+#### 3.4.2 Validation implementation location
+
+Flag validation happens in **each command handler** (`init.py`, `apply.py`), BEFORE invoking `run_pre_apply_doctor`. Both commands carry identical validation logic (symmetry):
+
+```python
+# init.py and apply.py — top of the command function, co-located with
+# the existing `if apply_flag and dry_run: ...` mutex check
+if apply_flag and dry_run:
+    raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+if allow_blocking and not apply_flag:
+    raise click.UsageError(
+        "--allow-blocking requires --apply; it has no effect in dry-run mode."
+    )
+
+# ... existing command body ...
+
+if apply_flag:
+    # pre-apply doctor only fires with --apply
+    run_pre_apply_doctor(target, profile_name, scope, allow_blocking)
+```
+
+Why in the command handler (not in `run_pre_apply_doctor`): if validation were inside the helper, it would never trigger for dry-run (the helper isn't called there) — silently ignoring the incorrect flag combination. Duplicating the 3-line validation across init and apply is cheap and keeps dry-run behavior correct.
+
+Tests: `test_init_dry_run_with_allow_blocking_raises_usage_error` and `test_apply_dry_run_with_allow_blocking_raises_usage_error` (both listed in §6.2).
 
 ### 3.5 CLI flag surface
 
@@ -586,7 +663,8 @@ This is stronger than the existing post-apply-rollback guarantee in init: pre-ap
 | `test_filter_keeps_unscoped_findings` | finding with `resolves_with=("sync_files",)`, scope `sync_files=False` | finding kept |
 | `test_filter_drops_fully_scoped_finding` | same finding, scope `sync_files=True` | finding dropped |
 | `test_filter_requires_all_domains` | finding with `resolves_with=("sync_files","sync_protection")`, scope `sync_files=True, sync_protection=False` | finding kept |
-| `test_filter_unknown_check_never_dropped` | finding with check name not in registry | finding kept (conservative default) |
+| `test_filter_unknown_check_never_dropped` | finding with check name not in registry (synthesized in test, e.g. `check="shape/fabricated"`) | finding kept — `get_check_resolves_with` returns `()`, filter treats as unfiltered |
+| `test_filter_synthetic_error_name_resolves_via_prefix_strip` | finding with `check="shape/check-error:shape/job-shape-coherence"`, scope `sync_files=True` | finding dropped — prefix strip in §3.1.2 maps to original `resolves_with=("sync_files",)` |
 | `test_filter_empty_scope_keeps_all` | scope with all False | no findings dropped |
 | `test_filter_full_scope_drops_registered_resolvable` | scope with all True | all findings with non-empty `resolves_with` dropped |
 | `test_filter_preserves_severity_ordering` | mixed critical/high/medium/low, scope filters out the high | remaining findings preserve their original order |
@@ -614,6 +692,7 @@ This is stronger than the existing post-apply-rollback guarantee in init: pre-ap
 - ADD `test_init_apply_first_time_adoption_succeeds`: profile declares `required_contexts`, live protection is empty → pre-apply doctor returns high `shape/required-contexts-match`, but filter drops it because init scope includes `sync_protection`. Apply proceeds.
 - ADD `test_init_apply_with_allow_blocking_proceeds`: same blocking finding as first test, but with `--allow-blocking` → stderr warning, apply proceeds.
 - ADD `test_init_dry_run_skips_pre_apply_doctor`: `--dry-run` path does NOT invoke doctor (assert via mock).
+- ADD `test_init_dry_run_with_allow_blocking_raises_usage_error`: `--dry-run` + `--allow-blocking` → `click.UsageError`. Covers §3.4.2 flag validation for init (symmetric with apply's equivalent test).
 
 **`tests/unit/commands/test_apply.py`**:
 
