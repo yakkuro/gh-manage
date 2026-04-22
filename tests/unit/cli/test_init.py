@@ -435,3 +435,42 @@ def test_init_does_not_call_doctor_on_dry_run(
 
     assert result.exit_code == 0, result.output
     mock_doctor.assert_not_called()
+
+
+def test_init_dry_run_with_allow_blocking_raises_usage_error(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    mocker.patch(
+        "gh_manage.commands.init.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "init",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--dry-run",
+            "--allow-blocking",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--allow-blocking requires --apply" in result.output
+
+
+def test_init_allow_blocking_without_apply_raises_usage_error(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    mocker.patch(
+        "gh_manage.commands.init.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--allow-blocking"],
+    )
+    assert result.exit_code == 2
+    assert "--allow-blocking requires --apply" in result.output

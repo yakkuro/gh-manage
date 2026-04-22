@@ -64,6 +64,15 @@ log = logging.getLogger(__name__)
     is_flag=True,
     help="Overwrite existing non-skip files.",
 )
+@click.option(
+    "--allow-blocking",
+    is_flag=True,
+    help=(
+        "Bypass the pre-apply doctor block gate. Use only when a "
+        "blocking finding is known and intentional — emits a loud "
+        "WARNING to stderr. Requires --apply."
+    ),
+)
 @handle_errors
 def init(
     path: Path,
@@ -71,9 +80,15 @@ def init(
     dry_run: bool,
     apply_flag: bool,
     force: bool,
+    allow_blocking: bool,
 ) -> None:
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+    if allow_blocking and not apply_flag:
+        raise click.UsageError(
+            "--allow-blocking requires --apply; it has no effect in dry-run mode."
+        )
 
     target = path.resolve()
 
