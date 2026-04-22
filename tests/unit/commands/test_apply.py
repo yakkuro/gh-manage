@@ -53,3 +53,44 @@ def test_apply_prints_doctor_warnings_to_stderr(
     assert result.exit_code == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     # warning goes to stderr
     assert "critical" in (result.stderr or "").lower()
+
+
+def test_apply_dry_run_with_allow_blocking_raises_usage_error(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """--dry-run + --allow-blocking is a user mistake; fail fast."""
+    mocker.patch(
+        "gh_manage.commands.apply.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "apply",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--dry-run",
+            "--allow-blocking",
+        ],
+    )
+    assert result.exit_code == 2  # Click UsageError exits 2
+    assert "--allow-blocking requires --apply" in (result.output or "")
+
+
+def test_apply_allow_blocking_without_apply_raises_usage_error(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """--allow-blocking without --apply is also invalid (default is dry-run)."""
+    mocker.patch(
+        "gh_manage.commands.apply.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["apply", str(tmp_path), "--profile", "python-service", "--allow-blocking"],
+    )
+    assert result.exit_code == 2
+    assert "--allow-blocking requires --apply" in (result.output or "")
