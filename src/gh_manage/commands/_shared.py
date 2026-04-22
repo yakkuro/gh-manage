@@ -221,14 +221,22 @@ def run_pre_apply_doctor(
         )
         return
 
-    raise click.ClickException(_format_blocking_message(blocking, target))
+    raise click.ClickException(_format_blocking_message(blocking, target, profile_name))
 
 
 def _format_blocking_message(
     blocking: tuple[Finding, ...],
     target: Path,
+    profile_name: str,
 ) -> str:
-    """Compose the user-facing pre-apply block message."""
+    """Compose the user-facing pre-apply block message.
+
+    The `doctor` subcommand in the suggested recovery command MUST
+    carry `--profile` explicitly. `doctor` falls back to inferring the
+    profile from `repos.yml` when the flag is omitted, which fails on
+    fresh / unregistered repos and picks the wrong profile when the
+    caller intentionally passed a different one.
+    """
     repo_label = str(target)
     prefix = (
         "Pre-apply doctor found blocking-severity finding(s) that this "
@@ -239,6 +247,6 @@ def _format_blocking_message(
         "\n"
         "To proceed anyway (not recommended), re-run with --allow-blocking.\n"
         "To see all findings (including non-blocking), run:\n"
-        f"    gh-manage doctor {target}"
+        f"    gh-manage doctor {target} --profile {profile_name}"
     )
     return prefix + "\n" + body + "\n" + suffix
