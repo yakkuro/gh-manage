@@ -203,6 +203,22 @@ def init(
             f"explicitly to override, then re-run init."
         )
 
+    # Pre-apply doctor gate (spec §3)
+    from gh_manage.commands._shared import run_pre_apply_doctor
+    from gh_manage.doctor.semantic_filter import ApplyScope
+
+    scope = ApplyScope(
+        sync_files=True,
+        sync_labels=True,
+        sync_protection=(profile.protection_policy is not None),
+    )
+    run_pre_apply_doctor(
+        target,
+        profile_name=profile_name,
+        scope=scope,
+        allow_blocking=allow_blocking,
+    )
+
     # Apply
     click.echo("")
     profile_sync.apply_files_diff(
