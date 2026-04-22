@@ -10,13 +10,16 @@ attaches the name to the function for later name-based filtering.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from itertools import chain
 from typing import TypeVar
 
 from gh_manage.doctor.context import CheckContext
-from gh_manage.doctor.errors import DoctorError
+from gh_manage.doctor.errors import CiYmlParseError, DoctorCheckError, DoctorError
 from gh_manage.findings import Finding
+
+log = logging.getLogger(__name__)
 
 CheckFn = Callable[[CheckContext], "tuple[Finding, ...]"]
 _F = TypeVar("_F", bound=CheckFn)
@@ -76,8 +79,47 @@ def get_check_resolves_with(check_name: str) -> tuple[str, ...]:
 
 
 def run_checks(ctx: CheckContext) -> tuple[Finding, ...]:
-    """Run every registered check in registration order."""
-    return tuple(chain.from_iterable(fn(ctx) for fn in _CHECKS))
+    """Run every registered check with per-check exception isolation.
+
+    If a check raises `CiYmlParseError` or `DoctorCheckError`, its
+    output is replaced with a synthetic LOW finding
+    (`check="shape/check-error:<original_name>"`) whose `resolves_with`
+    — looked up via `get_check_resolves_with` — mirrors the original
+    check's declaration. Other exception classes propagate.
+    """
+    all_findings: list[Finding] = []
+    for fn in _CHECKS:
+        check_name = getattr(fn, "__doctor_check_name__", "<unknown>")
+        try:
+            all_findings.extend(fn(ctx))
+        except (CiYmlParseError, DoctorCheckError) as exc:
+            log.warning(
+                "doctor check %r raised %s; emitting synthetic LOW diagnostic",
+                check_name,
+                type(exc).__name__,
+            )
+            all_findings.append(
+                Finding(
+                    severity="low",
+                    check=f"shape/check-error:{check_name}",
+                    repo=ctx.repo,
+                    field_path=check_name,
+                    current_value="check_error",
+                    desired_value="check_passes",
+                    message=(
+                        f"Doctor check {check_name!r} failed to run: {exc}. "
+                        f"Other checks continued; the pre-apply filter "
+                        f"treats this as if {check_name!r} emitted no findings."
+                    ),
+                    remediation=(
+                        "Fix the underlying cause of the check failure. "
+                        "For ci.yml parse errors, either repair the YAML "
+                        "manually or proceed with apply (which rewrites "
+                        "ci.yml from the profile template)."
+                    ),
+                )
+            )
+    return tuple(all_findings)
 
 
 def run_named_checks(ctx: CheckContext, names: tuple[str, ...]) -> tuple[Finding, ...]:
