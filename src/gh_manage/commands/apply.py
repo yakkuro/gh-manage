@@ -60,6 +60,15 @@ log = logging.getLogger(__name__)
     is_flag=True,
     help="Also apply branch protection (Phase 7 — not yet implemented).",
 )
+@click.option(
+    "--allow-blocking",
+    is_flag=True,
+    help=(
+        "Bypass the pre-apply doctor block gate. Use only when a "
+        "blocking finding is known and intentional — emits a loud "
+        "WARNING to stderr. Requires --apply."
+    ),
+)
 @handle_errors
 def apply(
     path: Path,
@@ -69,9 +78,15 @@ def apply(
     force: bool,
     also_labels: bool,
     also_protection: bool,
+    allow_blocking: bool,
 ) -> None:
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+    if allow_blocking and not apply_flag:
+        raise click.UsageError(
+            "--allow-blocking requires --apply; it has no effect in dry-run mode."
+        )
 
     target = path.resolve()
 
@@ -171,6 +186,22 @@ def apply(
             f"{n_protection_changes} protection changes. Re-run with --apply to execute."
         )
         return
+
+    # Pre-apply doctor gate (spec §3)
+    from gh_manage.commands._shared import run_pre_apply_doctor
+    from gh_manage.doctor.semantic_filter import ApplyScope
+
+    scope = ApplyScope(
+        sync_files=True,
+        sync_labels=also_labels,
+        sync_protection=also_protection,
+    )
+    run_pre_apply_doctor(
+        target,
+        profile_name=profile_name,
+        scope=scope,
+        allow_blocking=allow_blocking,
+    )
 
     # Pre-apply validation: fail fast on protection downgrade BEFORE any
     # side-effect (files, labels, protection). Otherwise an aborting

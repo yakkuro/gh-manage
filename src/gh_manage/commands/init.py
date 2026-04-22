@@ -64,6 +64,15 @@ log = logging.getLogger(__name__)
     is_flag=True,
     help="Overwrite existing non-skip files.",
 )
+@click.option(
+    "--allow-blocking",
+    is_flag=True,
+    help=(
+        "Bypass the pre-apply doctor block gate. Use only when a "
+        "blocking finding is known and intentional — emits a loud "
+        "WARNING to stderr. Requires --apply."
+    ),
+)
 @handle_errors
 def init(
     path: Path,
@@ -71,9 +80,15 @@ def init(
     dry_run: bool,
     apply_flag: bool,
     force: bool,
+    allow_blocking: bool,
 ) -> None:
     if apply_flag and dry_run:
         raise click.UsageError("--apply and --dry-run are mutually exclusive.")
+
+    if allow_blocking and not apply_flag:
+        raise click.UsageError(
+            "--allow-blocking requires --apply; it has no effect in dry-run mode."
+        )
 
     target = path.resolve()
 
@@ -171,6 +186,26 @@ def init(
         )
         return
 
+    # Pre-apply doctor gate (spec §3).
+    # Runs BEFORE the protection-downgrade check so the ordering matches
+    # apply.py and the spec data-flow diagram (§3.2): "doctor first,
+    # then existing gates". Keeps the two commands' first-failure reasons
+    # aligned.
+    from gh_manage.commands._shared import run_pre_apply_doctor
+    from gh_manage.doctor.semantic_filter import ApplyScope
+
+    scope = ApplyScope(
+        sync_files=True,
+        sync_labels=True,
+        sync_protection=(profile.protection_policy is not None),
+    )
+    run_pre_apply_doctor(
+        target,
+        profile_name=profile_name,
+        scope=scope,
+        allow_blocking=allow_blocking,
+    )
+
     # Pre-apply validation: fail fast on protection downgrade BEFORE any
     # side-effect (files, labels, protection). Otherwise an aborting
     # downgrade would leave the repo in a partial-apply state with files
@@ -190,7 +225,7 @@ def init(
 
     # Apply
     click.echo("")
-    created_paths: list[Path] = profile_sync.apply_files_diff(
+    profile_sync.apply_files_diff(
         files_diff, target, templates_root, force=force, progress=click.echo
     )
     labels_sync.apply_diff(labels_diff, owner_repo, progress=click.echo)
@@ -206,52 +241,30 @@ def init(
             progress=click.echo,
         )
 
-    # Post-apply doctor gate (spec §5.B).
-    # Critical findings trigger rollback: remove files init created
-    # (best-effort unlink), surface the doctor findings.
-    findings = doctor_pkg.run_on_path(target, profile_name=profile_name)
-    critical = tuple(f for f in findings if f.severity == "critical")
-    if critical:
-        log.warning(
-            "init aborting: critical doctor findings=%d, rolling back %d file(s)",
-            len(critical),
-            len(created_paths),
-        )
+    # Post-apply doctor warnings (mirrors apply.py, spec §3.2)
+    from gh_manage.doctor.errors import DoctorCheckError
+
+    try:
+        findings = doctor_pkg.run_on_path(target, profile_name=profile_name)
+    except DoctorCheckError as exc:
+        log.warning("post-init doctor check failed: %s", exc)
+        click.echo(f"WARNING: post-init doctor check failed: {exc}", err=True)
+        findings = ()
+
+    blocking = tuple(f for f in findings if f.severity in ("critical", "high"))
+    if blocking:
         click.echo("", err=True)
-        click.echo("init post-check found critical findings:", err=True)
         click.echo(
-            doctor_report.format_stdout(critical, repo=owner_repo),
+            "WARNING: post-init doctor surfaced blocking-severity findings:",
             err=True,
         )
-        failed_deletes: list[tuple[Path, OSError]] = []
-        for p in reversed(created_paths):
-            try:
-                if p.is_file():
-                    p.unlink()
-            except OSError as roll_err:
-                log.warning(
-                    "init rollback: cannot delete %s: %s",
-                    p,
-                    roll_err,
-                )
-                failed_deletes.append((p, roll_err))
-        if failed_deletes:
-            click.echo("", err=True)
-            click.echo(
-                "WARNING: rollback incomplete — manual cleanup required:",
-                err=True,
-            )
-            for p, err in failed_deletes:
-                click.echo(f"  cannot delete {p}: {err}", err=True)
-            raise click.ClickException(
-                "init aborted due to critical doctor findings; rollback "
-                "left orphan files. Run `git status` and remove the "
-                "listed files manually, then re-run init. "
-                "See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
-            )
-        raise click.ClickException(
-            "init aborted due to critical doctor findings; rolled back "
-            "files. See docs/specs/2026-04-17-doctor-guardrail-design.md §5."
+        click.echo(
+            doctor_report.format_stdout(blocking, repo=owner_repo),
+            err=True,
+        )
+        click.echo(
+            "Not failing init — run `gh-manage doctor` to review.",
+            err=True,
         )
 
     n_protection_changes_final = (

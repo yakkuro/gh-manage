@@ -78,6 +78,26 @@ A v2.0 candidate is announced in this order:
 
 In practice this means v2.0 will not ship sooner than 1 minor (v1.1) after a break is announced. Consumers get at least one minor release worth of warning before their pins need updating.
 
+## CLI Release History
+
+Quick reference for recent and upcoming Python CLI releases. See [`CHANGELOG-cli.md`](../CHANGELOG-cli.md) for detailed release notes per version.
+
+### cli/v1.10.0 (planned — 2026-04-22)
+
+- **Prevention-layer guardrails (Theme B)**: `init --apply` and `apply --apply` now run the doctor framework before mutating any repository state. Findings whose resolving domain (sync_files / sync_labels / sync_protection) is NOT covered by the current invocation cause a `ClickException` with zero side-effects.
+- Added `--allow-blocking` flag to `init` and `apply` as an explicit override.
+- Removed `init`'s post-apply CRITICAL rollback; superseded by the pre-apply gate.
+- Added regression test for bundled ci.yml template canonical shape.
+- Spec: `docs/specs/2026-04-22-theme-b-guardrails-prevention-layer-design.md`
+
+### cli/v1.0.1 — 2026-04-15
+
+Hardening cleanup. See [`CHANGELOG-cli.md`](../CHANGELOG-cli.md#101---2026-04-15).
+
+### cli/v1.0.0 — 2026-04-14
+
+Stable API milestone. See [`CHANGELOG-cli.md`](../CHANGELOG-cli.md#100---2026-04-14).
+
 ## Reference
 
 - [`CHANGELOG-reusable.md`](../CHANGELOG-reusable.md) — reusable workflow releases (`v<X.Y.Z>` tags)

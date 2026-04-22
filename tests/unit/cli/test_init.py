@@ -387,8 +387,8 @@ def test_init_stops_on_protection_downgrade(
 def test_init_calls_doctor_after_apply_when_no_critical_findings(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """After apply succeeds, init must invoke doctor on the target path.
-    If doctor returns no critical findings, init exits 0."""
+    """Pre-apply and post-apply doctor both called. Init succeeds when
+    doctor returns no critical/blocking findings."""
     _patch_git(mocker)
     _patch_labels(mocker)
     _patch_protection_default(mocker)
@@ -397,7 +397,10 @@ def test_init_calls_doctor_after_apply_when_no_critical_findings(
         return_value=[],
     )
     mock_labels_apply = mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
-    mock_doctor = mocker.patch(
+    # Mock the pre-apply doctor gate (run_pre_apply_doctor in _shared)
+    mock_run_pre_apply = mocker.patch("gh_manage.commands._shared.run_pre_apply_doctor")
+    # Mock post-apply doctor call
+    mock_post_apply_doctor = mocker.patch(
         "gh_manage.commands.init.doctor_pkg.run_on_path",
         return_value=(),
     )
@@ -411,67 +414,10 @@ def test_init_calls_doctor_after_apply_when_no_critical_findings(
 
     assert result.exit_code == 0, result.output
     mock_labels_apply.assert_called_once()
-    mock_doctor.assert_called_once()
-    # Verify doctor was called with the target path
-    call_args = mock_doctor.call_args
-    assert call_args[0][0] == tmp_path.resolve()
-
-
-def test_init_rolls_back_created_files_on_doctor_critical(
-    mocker: MockerFixture, tmp_path: Path
-) -> None:
-    """Critical doctor findings trigger rollback: unlink created files
-    and raise ClickException."""
-    from gh_manage.findings import Finding
-
-    _patch_git(mocker)
-    _patch_labels(mocker)
-    _patch_protection_default(mocker)
-
-    # Simulate apply_files_diff returning a created file path
-    ci_path = tmp_path / ".github" / "workflows" / "ci.yml"
-    ci_path.parent.mkdir(parents=True, exist_ok=True)
-    ci_path.write_text("stub ci.yml")
-
-    mocker.patch(
-        "gh_manage.commands.init.profile_sync.apply_files_diff",
-        return_value=[ci_path],
-    )
-    mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
-
-    # Simulate doctor finding a critical issue
-    fake_critical = (
-        Finding(
-            severity="critical",
-            check="shape/job-shape-coherence",
-            repo="yakkuro/example",
-            field_path="jobs.lint.runs-on",
-            current_value="ubuntu-latest",
-            desired_value="ubuntu-22.04",
-            message="Job shape does not match profile",
-        ),
-    )
-
-    mock_doctor = mocker.patch(
-        "gh_manage.commands.init.doctor_pkg.run_on_path",
-        return_value=fake_critical,
-    )
-    mock_report = mocker.patch(
-        "gh_manage.commands.init.doctor_report.format_stdout",
-        return_value="Critical finding detected",
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["init", str(tmp_path), "--profile", "python-service", "--apply"],
-        prog_name="gh-manage",
-    )
-
-    assert result.exit_code != 0
-    assert not ci_path.exists(), "rollback should have removed ci.yml"
-    mock_doctor.assert_called_once()
-    mock_report.assert_called_once()
+    # Pre-apply doctor gate called
+    mock_run_pre_apply.assert_called_once()
+    # Post-apply doctor also called
+    mock_post_apply_doctor.assert_called_once()
 
 
 def test_init_does_not_call_doctor_on_dry_run(
@@ -494,64 +440,202 @@ def test_init_does_not_call_doctor_on_dry_run(
     mock_doctor.assert_not_called()
 
 
-def test_init_rollback_continues_on_unlink_failure(
+def test_init_dry_run_with_allow_blocking_raises_usage_error(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Rollback should continue even if unlink fails on a file."""
+    mocker.patch(
+        "gh_manage.commands.init.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "init",
+            str(tmp_path),
+            "--profile",
+            "python-service",
+            "--dry-run",
+            "--allow-blocking",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--allow-blocking requires --apply" in result.output
+
+
+def test_init_allow_blocking_without_apply_raises_usage_error(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    mocker.patch(
+        "gh_manage.commands.init.git_cli.get_origin_owner_repo",
+        return_value="yakkuro/example",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--allow-blocking"],
+    )
+    assert result.exit_code == 2
+    assert "--allow-blocking requires --apply" in result.output
+
+
+def test_init_first_time_adoption_succeeds(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """Profile declares required_contexts; live protection is empty →
+    shape/required-contexts-match HIGH is filtered by sync_protection=True
+    scope (init always sets sync_protection when profile has policy)."""
+    from gh_manage.doctor import checks  # noqa: F401
     from gh_manage.findings import Finding
 
     _patch_git(mocker)
     _patch_labels(mocker)
     _patch_protection_default(mocker)
-
-    ci_path = tmp_path / ".github" / "workflows" / "ci.yml"
-    ci_path.parent.mkdir(parents=True, exist_ok=True)
-    ci_path.write_text("stub ci.yml")
-
     mocker.patch(
         "gh_manage.commands.init.profile_sync.apply_files_diff",
-        return_value=[ci_path],
+        return_value=[],
     )
     mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
-
-    fake_critical = (
-        Finding(
-            severity="critical",
-            check="test",
-            repo="yakkuro/example",
-            field_path="x",
-            current_value="a",
-            desired_value="b",
-            message="test finding",
+    # Simulate pre-apply doctor returning a HIGH finding that is filtered
+    # by the init scope (sync_protection=True includes this check)
+    mocker.patch(
+        "gh_manage.commands._shared.doctor.run_on_path",
+        return_value=(
+            Finding(
+                severity="high",
+                check="shape/required-contexts-match",
+                repo="yakkuro/example",
+                field_path="required_status_checks.contexts",
+                current_value=None,
+                desired_value=None,
+                message="required contexts not configured",
+            ),
         ),
     )
-
-    mocker.patch(
-        "gh_manage.commands.init.doctor_pkg.run_on_path",
-        return_value=fake_critical,
-    )
-    mocker.patch(
-        "gh_manage.commands.init.doctor_report.format_stdout",
-        return_value="Critical",
-    )
-
-    # Mock unlink to raise OSError
-    original_unlink = Path.unlink
-
-    def failing_unlink(self: Path, **kwargs: dict) -> None:
-        if "ci.yml" in str(self):
-            raise OSError("Permission denied")
-        return original_unlink(self, **kwargs)
-
-    mocker.patch.object(Path, "unlink", failing_unlink)
-
     runner = CliRunner()
     result = runner.invoke(
         main,
         ["init", str(tmp_path), "--profile", "python-service", "--apply"],
-        prog_name="gh-manage",
     )
+    assert result.exit_code == 0, f"stdout={result.output!r}"
 
-    assert result.exit_code != 0
-    # Should still get the critical finding error, with a warning about rollback failure
-    assert "rollback" in result.output.lower() or "warning" in result.output.lower()
+
+def test_init_blocks_on_unfiltered_blocking_finding(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """Inject a finding whose resolves_with is NOT covered by init's scope
+    (use a fake domain)."""
+    from gh_manage.doctor import registry
+    from gh_manage.doctor.context import CheckContext
+    from gh_manage.findings import Finding
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check(
+            "shape/test-blocks-init", resolves_with=("sync_unknown_domain",)
+        )
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        _patch_git(mocker)
+        _patch_labels(mocker)
+        mocker.patch(
+            "gh_manage.commands.init.protection_api.get_branch_protection",
+            return_value={},
+        )
+        mocker.patch(
+            "gh_manage.commands._shared.doctor.run_on_path",
+            return_value=(
+                Finding(
+                    severity="high",
+                    check="shape/test-blocks-init",
+                    repo="yakkuro/example",
+                    field_path="x",
+                    current_value=None,
+                    desired_value=None,
+                    message="unfilterable",
+                ),
+            ),
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["init", str(tmp_path), "--profile", "python-service", "--apply"],
+        )
+        assert result.exit_code == 1
+        assert "Pre-apply doctor" in (result.output or "")
+    finally:
+        registry._CHECKS[:] = before
+
+
+def test_init_allow_blocking_bypasses(mocker: MockerFixture, tmp_path: Path) -> None:
+    from gh_manage.doctor import registry
+    from gh_manage.doctor.context import CheckContext
+    from gh_manage.findings import Finding
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check(
+            "shape/test-blocks-init-v2", resolves_with=("sync_unknown",)
+        )
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        _patch_git(mocker)
+        _patch_labels(mocker)
+        _patch_protection_default(mocker)
+        mocker.patch(
+            "gh_manage.commands.init.profile_sync.apply_files_diff",
+            return_value=[],
+        )
+        mocker.patch("gh_manage.commands.init.labels_sync.apply_diff")
+        mocker.patch(
+            "gh_manage.commands._shared.doctor.run_on_path",
+            return_value=(
+                Finding(
+                    severity="high",
+                    check="shape/test-blocks-init-v2",
+                    repo="yakkuro/example",
+                    field_path="x",
+                    current_value=None,
+                    desired_value=None,
+                    message="unfilterable",
+                ),
+            ),
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "init",
+                str(tmp_path),
+                "--profile",
+                "python-service",
+                "--apply",
+                "--allow-blocking",
+            ],
+        )
+        assert result.exit_code == 0, f"stdout={result.output!r}"
+        assert "--allow-blocking" in result.output
+    finally:
+        registry._CHECKS[:] = before
+
+
+def test_init_dry_run_skips_pre_apply_doctor(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    _patch_git(mocker)
+    _patch_labels(mocker)
+    _patch_protection_default(mocker)
+    run_on_path_mock = mocker.patch("gh_manage.commands._shared.doctor.run_on_path")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init", str(tmp_path), "--profile", "python-service", "--dry-run"],
+    )
+    assert result.exit_code == 0
+    run_on_path_mock.assert_not_called()
