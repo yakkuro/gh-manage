@@ -50,6 +50,31 @@ def register_check(
     return _decorator
 
 
+def get_check_resolves_with(check_name: str) -> tuple[str, ...]:
+    """Return the `resolves_with` tuple for a check name.
+
+    Three cases handled:
+
+    1. Plain registered name (e.g. `"shape/job-shape-coherence"`) —
+       direct lookup against the registry.
+    2. Synthetic error name `"shape/check-error:<original>"` emitted
+       by `run_checks` when a check raised CiYmlParseError or
+       DoctorCheckError — strip the prefix and re-lookup the original.
+    3. Unknown name — return `()` (conservative default, matches the
+       "unset resolves_with is never filtered" invariant).
+    """
+    for fn in _CHECKS:
+        if getattr(fn, "__doctor_check_name__", None) == check_name:
+            return getattr(fn, "__doctor_resolves_with__", ())
+    prefix = "shape/check-error:"
+    if check_name.startswith(prefix):
+        original = check_name[len(prefix) :]
+        for fn in _CHECKS:
+            if getattr(fn, "__doctor_check_name__", None) == original:
+                return getattr(fn, "__doctor_resolves_with__", ())
+    return ()
+
+
 def run_checks(ctx: CheckContext) -> tuple[Finding, ...]:
     """Run every registered check in registration order."""
     return tuple(chain.from_iterable(fn(ctx) for fn in _CHECKS))

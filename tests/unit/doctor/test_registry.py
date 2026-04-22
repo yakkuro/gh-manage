@@ -112,3 +112,53 @@ def test_register_check_resolves_with_defaults_to_empty():
         assert getattr(_c, "__doctor_resolves_with__", None) == ()
     finally:
         registry._CHECKS[:] = before
+
+
+def test_get_check_resolves_with_returns_registered_tuple():
+    from gh_manage.doctor import registry
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check("shape/known", resolves_with=("sync_files",))
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        assert registry.get_check_resolves_with("shape/known") == ("sync_files",)
+    finally:
+        registry._CHECKS[:] = before
+
+
+def test_get_check_resolves_with_synthetic_prefix_strip():
+    """shape/check-error:<original> maps to original's resolves_with."""
+    from gh_manage.doctor import registry
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check(
+            "shape/original",
+            resolves_with=("sync_protection",),
+        )
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        assert registry.get_check_resolves_with("shape/check-error:shape/original") == (
+            "sync_protection",
+        )
+    finally:
+        registry._CHECKS[:] = before
+
+
+def test_get_check_resolves_with_unknown_returns_empty():
+    from gh_manage.doctor import registry
+
+    assert registry.get_check_resolves_with("shape/does-not-exist") == ()
+
+
+def test_get_check_resolves_with_unknown_synthetic_returns_empty():
+    from gh_manage.doctor import registry
+
+    assert registry.get_check_resolves_with("shape/check-error:shape/nonexistent") == ()
