@@ -24,11 +24,26 @@ _F = TypeVar("_F", bound=CheckFn)
 _CHECKS: list[CheckFn] = []
 
 
-def register_check(name: str) -> Callable[[_F], _F]:
-    """Decorator factory: register a check under `name`."""
+def register_check(
+    name: str,
+    *,
+    resolves_with: tuple[str, ...] = (),
+) -> Callable[[_F], _F]:
+    """Decorator factory: register a check under `name`.
+
+    `resolves_with` declares which `ApplyScope` domains (sync_files,
+    sync_labels, sync_protection) will resolve this check's findings
+    as a side-effect of `init` / `apply` running. Used by
+    `doctor.semantic_filter.filter_pre_apply_findings` to drop
+    findings that the current apply invocation will fix.
+
+    Default `()` is the conservative choice: a check without a
+    declared resolves_with is NEVER filtered (always blocking).
+    """
 
     def _decorator(fn: _F) -> _F:
         fn.__doctor_check_name__ = name  # type: ignore[attr-defined]
+        fn.__doctor_resolves_with__ = resolves_with  # type: ignore[attr-defined]
         _CHECKS.append(fn)
         return fn
 

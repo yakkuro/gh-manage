@@ -78,3 +78,37 @@ def test_run_named_checks_raises_on_unknown_name():
 
     with pytest.raises(DoctorError):
         registry.run_named_checks(_ctx(), ("shape/does-not-exist",))
+
+
+def test_register_check_stores_resolves_with_tuple():
+    from gh_manage.doctor import registry
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check(
+            "shape/test-with-resolves", resolves_with=("sync_files",)
+        )
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        assert getattr(_c, "__doctor_resolves_with__", None) == ("sync_files",)
+    finally:
+        registry._CHECKS[:] = before
+
+
+def test_register_check_resolves_with_defaults_to_empty():
+    from gh_manage.doctor import registry
+
+    before = list(registry._CHECKS)
+    try:
+        registry._CHECKS.clear()
+
+        @registry.register_check("shape/test-no-resolves")
+        def _c(ctx: CheckContext) -> tuple[Finding, ...]:
+            return ()
+
+        assert getattr(_c, "__doctor_resolves_with__", None) == ()
+    finally:
+        registry._CHECKS[:] = before
