@@ -183,7 +183,21 @@ def test_apply_logs_warning_on_doctor_check_error(
     def _raise_doctor_check(*a, **kw):
         raise DoctorCheckError("bad ci.yml")
 
-    monkeypatch.setattr("gh_manage.doctor.run_on_path", _raise_doctor_check)
+    # Pre-apply doctor should pass (return empty); post-apply should raise.
+    # Since both call doctor.run_on_path, we patch at the helper level:
+    # pre-apply uses _shared.doctor, post-apply uses _doctor alias.
+    call_count = [0]
+
+    def _doctor_run_on_path(*a, **kw):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # Pre-apply call: return empty
+            return ()
+        else:
+            # Post-apply call: raise
+            raise DoctorCheckError("bad ci.yml")
+
+    monkeypatch.setattr("gh_manage.doctor.run_on_path", _doctor_run_on_path)
 
     runner = CliRunner()
     result = runner.invoke(

@@ -187,6 +187,22 @@ def apply(
         )
         return
 
+    # Pre-apply doctor gate (spec §3)
+    from gh_manage.commands._shared import run_pre_apply_doctor
+    from gh_manage.doctor.semantic_filter import ApplyScope
+
+    scope = ApplyScope(
+        sync_files=True,
+        sync_labels=also_labels,
+        sync_protection=also_protection,
+    )
+    run_pre_apply_doctor(
+        target,
+        profile_name=profile_name,
+        scope=scope,
+        allow_blocking=allow_blocking,
+    )
+
     # Pre-apply validation: fail fast on protection downgrade BEFORE any
     # side-effect (files, labels, protection). Otherwise an aborting
     # downgrade would leave the repo in a partial-apply state with files
